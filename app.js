@@ -51,13 +51,12 @@ async function checkForUpdates() {
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let allFiles = [];        // {name, ext, size, file, zipParent?, zipName?}
 let currentFolderName = '';
-let scene, camera, renderer, model, animId;
+let scene, camera, renderer;
 let mouse = { down: false, x: 0, y: 0, button: 0 };
 let camTheta = 0.6, camPhi = 1.1, camRadius = 3;
 let camTarget = new THREE.Vector3(0, 0, 0);
 let wireframe = false;
 let currentMesh = null;
-let isAnimating = false;
 
 // ── AUTO-ROTATE STATE ──────────────────────────────────────────────────────────
 let autoRotate       = true;   // on by default
@@ -132,7 +131,7 @@ function initThree() {
 }
 
 function animate() {
-  animId = requestAnimationFrame(animate);
+  requestAnimationFrame(animate);
   renderer.render(scene, camera);
 }
 

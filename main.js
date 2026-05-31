@@ -1,7 +1,8 @@
 const { app, BrowserWindow, session, ipcMain, shell, dialog } = require('electron');
-const path  = require('path');
-const https = require('https');
-const fs    = require('fs').promises;
+const path   = require('path');
+const https  = require('https');
+const fs     = require('fs').promises;
+const AdmZip = require('adm-zip');
 
 const VERSION_URL = 'https://makerxdesigns.com/makerx-view-sort-app/version.json';
 
@@ -12,8 +13,6 @@ ipcMain.handle('rename-file', async (e, oldPath, newPath) => { await fs.rename(o
 ipcMain.handle('delete-file', async (e, filePath)         => { await fs.unlink(filePath); });
 ipcMain.handle('create-dir',  async (e, dirPath)          => { await fs.mkdir(dirPath, { recursive: true }); });
 ipcMain.handle('read-file',   async (e, filePath)         => { return await fs.readFile(filePath); });
-
-const AdmZip = require('adm-zip');
 
 // Returns the file list inside a ZIP — only metadata, no binary transfer
 ipcMain.handle('peek-zip', async (e, filePath) => {

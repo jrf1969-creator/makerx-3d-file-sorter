@@ -58,7 +58,7 @@
     transition: background 0.1s, border-color 0.1s;
     position: relative;
   }
-  .file-item:hover { background: var(--bg3); }
+  .file-item:hover { background: rgba(26,74,26,0.5); }
   .file-item.active {
     background: var(--accent-dim);
     border-left-color: var(--accent);
@@ -69,10 +69,10 @@
     font-size: 11px; font-weight: 700; flex-shrink: 0;
     font-family: 'Space Mono', monospace;
   }
-  .icon-stl { background: rgba(245,158,11,0.18); color: var(--accent); }
-  .icon-3mf { background: rgba(34,197,94,0.15); color: var(--green); }
-  .icon-zip { background: rgba(245,158,11,0.15); color: var(--orange); }
-  .icon-other { background: rgba(90,93,102,0.15); color: var(--text3); }
+  .icon-stl   { background: rgba(62,198,62,0.15);  color: var(--accent); }
+  .icon-3mf   { background: rgba(86,255,86,0.12);  color: var(--neon); }
+  .icon-zip   { background: rgba(62,198,62,0.08);  color: var(--text2); }
+  .icon-other { background: rgba(90,93,102,0.15);  color: var(--text3); }
 
   .file-info { flex: 1; min-width: 0; }
   .file-name {
@@ -104,7 +104,7 @@
     border-left: 2px solid transparent;
     transition: background 0.1s, border-color 0.1s;
   }
-  .zip-child:hover { background: var(--bg3); }
+  .zip-child:hover { background: rgba(26,74,26,0.5); }
   .zip-child.active { background: var(--accent-dim); border-left-color: var(--accent); }
   .zip-child .file-name { font-size: 12px; }
   .zip-child .file-meta { font-size: 10px; }
@@ -138,17 +138,6 @@
     flex: 1;
   }
   .viewer-bar .file-title span { color: var(--text3); font-weight: 400; font-size: 12px; margin-left: 6px; }
-  .tool-btn {
-    display: flex; align-items: center; gap: 5px;
-    padding: 5px 10px;
-    border: 1px solid var(--border2); border-radius: 5px;
-    background: none; color: var(--text2); font-size: 12px;
-    cursor: pointer; transition: all 0.15s;
-    font-family: 'DM Sans', sans-serif;
-  }
-  .tool-btn:hover { background: var(--bg3); color: var(--text); border-color: var(--border2); }
-  .tool-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
-
   /* VIEWER AREA */
   .viewer-wrap {
     flex: 1; position: relative; overflow: hidden;
@@ -241,17 +230,6 @@
 
   /* SEARCH */
   .search-wrap { padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .search-input {
-    width: 100%; padding: 5px 9px;
-    background: var(--bg3); border: 1px solid var(--border2); border-radius: 5px;
-    color: var(--text); font-size: 12px; font-family: "DM Sans", sans-serif;
-    outline: none;
-  }
-  .search-input:focus { border-color: var(--accent); }
-
-  /* DROP HIGHLIGHT */
-  .sidebar.drag-over { outline: 2px dashed var(--accent); outline-offset: -3px; }
-  .sidebar.drag-over .empty-state { opacity: 0.6; }
 
   /* SCANNING INDICATOR */
   .scan-bar {
@@ -494,16 +472,6 @@
   .loading-overlay { background: var(--bg); }
   /* no file */
   .no-file-icon { border: 1px solid var(--border2); }
-  /* file item active */
-  .file-item.active { background: var(--accent-dim) !important; border-left-color: var(--accent) !important; }
-  .zip-child.active { background: var(--accent-dim) !important; border-left-color: var(--accent) !important; }
-  /* file item hover */
-  .file-item:hover { background: rgba(26,74,26,0.5); }
-  .zip-child:hover { background: rgba(26,74,26,0.5); }
-  /* icons */
-  .icon-stl { background: rgba(62,198,62,0.15); color: var(--accent); }
-  .icon-3mf { background: rgba(86,255,86,0.12); color: var(--neon); }
-  .icon-zip { background: rgba(62,198,62,0.08); color: var(--text2); }
   /* color dot active */
   .color-dot:hover, .color-dot.active { border-color: var(--accent); box-shadow: 0 0 6px var(--neon-glow); }
 
