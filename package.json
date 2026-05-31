@@ -18,6 +18,8 @@
       "main.js",
       "preload.js",
       "index.html",
+      "style.css",
+      "app.js",
       "libs/**",
       "node_modules/adm-zip/**"
     ],
