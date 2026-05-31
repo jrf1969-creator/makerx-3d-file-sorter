@@ -1,8 +1,7 @@
 const { app, BrowserWindow, session, ipcMain, shell, dialog } = require('electron');
-const path     = require('path');
-const nodePath = require('path');
-const https    = require('https');
-const fs       = require('fs').promises;
+const path  = require('path');
+const https = require('https');
+const fs    = require('fs').promises;
 
 const VERSION_URL = 'https://makerxdesigns.com/makerx-view-sort-app/version.json';
 
@@ -17,7 +16,7 @@ ipcMain.handle('read-file',   async (e, filePath)         => { return await fs.r
 const AdmZip = require('adm-zip');
 
 // Returns the file list inside a ZIP — only metadata, no binary transfer
-ipcMain.handle('peek-zip', (e, filePath) => {
+ipcMain.handle('peek-zip', async (e, filePath) => {
   const zip        = new AdmZip(filePath);
   const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp']);
   const entries    = zip.getEntries().filter(en => !en.isDirectory);
@@ -32,7 +31,7 @@ ipcMain.handle('peek-zip', (e, filePath) => {
                     ext:  en.entryName.split('.').pop().toLowerCase(),
                     size: en.header.size });
   }
-  const stat = require('fs').statSync(filePath);
+  const stat = await fs.stat(filePath);
   return { size: stat.size, contents };
 });
 
@@ -55,11 +54,11 @@ ipcMain.handle('scan-folder', async (e, dirPath) => {
   try {
     for (const entry of await fs.readdir(dirPath, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        dirs.push({ name: entry.name, path: nodePath.join(dirPath, entry.name) });
+        dirs.push({ name: entry.name, path: path.join(dirPath, entry.name) });
       } else if (entry.isFile()) {
         const ext = entry.name.split('.').pop().toLowerCase();
         if (SUPPORTED.has(ext)) {
-          const p = nodePath.join(dirPath, entry.name);
+          const p = path.join(dirPath, entry.name);
           const stat = await fs.stat(p);
           files.push({ name: entry.name, ext, path: p, size: stat.size });
         }

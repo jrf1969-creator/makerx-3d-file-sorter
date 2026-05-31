@@ -1737,78 +1737,17 @@ function hideScanBar() {
 
 // ── FILE LIST RENDER ───────────────────────────────────────────────────────────
 function renderFileList() {
-  const list = document.getElementById('fileList');
-  if (!allFiles.length) {
+  const list      = document.getElementById('fileList');
+  const supported = allFiles.filter(f => ['stl','3mf','zip'].includes(f.ext));
+  list.innerHTML  = '';
+  if (!supported.length) {
     list.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><p>No supported files found.</p></div>';
     return;
   }
-
-  const supported = allFiles.filter(f => ['stl','3mf','zip'].includes(f.ext));
   document.getElementById('fileCount').textContent = supported.length + ' files';
-
-  list.innerHTML = '';
   for (const item of supported) {
-    const row = document.createElement('div');
-    row.className = 'file-item';
-    row.dataset.name = item.name;
-
-    const iconClass = item.ext === 'stl' ? 'icon-stl' : item.ext === '3mf' ? 'icon-3mf' : ['stp','step'].includes(item.ext) ? 'icon-step' : 'icon-zip';
-    const iconText = item.ext.toUpperCase();
-    const sizeStr = formatSize(item.size);
-
-    row.innerHTML = `
-      <div class="icon ${iconClass}">${iconText}</div>
-      <div class="file-info">
-        <div class="file-name" title="${item.name}">${item.name}</div>
-        <div class="file-meta">${sizeStr}</div>
-      </div>
-      ${item.ext === 'zip' ? `<button class="expand-btn" onclick="toggleZip(event,'${item.name}')">▶</button>` : ''}
-    `;
-
-    if (['stp','step'].includes(item.ext)) {
-      row.addEventListener('click', () => showUnsupported(item));
-    } else if (item.ext !== 'zip') {
-      row.addEventListener('click', () => loadFile(item));
-    } else {
-      row.addEventListener('click', e => {
-        if (!e.target.classList.contains('expand-btn')) toggleZip(e, item.name);
-      });
-    }
-
-    list.appendChild(row);
-
-    // ZIP children
-    if (item.ext === 'zip' && item.zipContents?.length) {
-      const children = document.createElement('div');
-      children.className = 'zip-children';
-      children.id = 'zip_' + item.name;
-
-      for (const child of item.zipContents) {
-        const childExt = child.ext;
-        const isPreviewable = ['stl','3mf'].includes(childExt);
-        const cRow = document.createElement('div');
-        cRow.className = 'zip-child';
-        const cIconClass = childExt === 'stl' ? 'icon-stl' : childExt === '3mf' ? 'icon-3mf' : 'icon-other';
-
-        cRow.innerHTML = `
-          <div class="icon ${cIconClass}" style="width:22px;height:22px;font-size:9px;border-radius:3px">${childExt.toUpperCase()}</div>
-          <div class="file-info">
-            <div class="file-name" title="${child.path}">${child.path.split('/').pop()}</div>
-            <div class="file-meta">${child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : ''}${formatSize(child.size)}</div>
-          </div>
-        `;
-
-        if (isPreviewable) {
-          cRow.style.cursor = 'pointer';
-          cRow.addEventListener('click', () => loadZipChild(child, item));
-        } else {
-          cRow.style.cursor = 'default';
-          cRow.style.opacity = '0.5';
-        }
-        children.appendChild(cRow);
-      }
-      list.appendChild(children);
-    }
+    list.appendChild(buildFileRow(item));
+    if (item.ext === 'zip' && item.zipContents?.length) injectZipChildren(item);
   }
 }
 
