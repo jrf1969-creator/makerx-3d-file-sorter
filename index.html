@@ -2767,25 +2767,34 @@ function renderMainCtxMenu(menu, item) {
       if (f._root) return `<div class="ctx-item ctx-fld" data-folder="">${SVG_FOLDER} (root folder)</div>`;
       return `<div class="ctx-item ctx-fld" data-folder="${f.name}">${SVG_FOLDER} ${f.name}</div>`;
     }).join('');
+    const moveLabel = selectedFiles.size > 1 && selectedFiles.has(item)
+      ? `Move ${selectedFiles.size} files to folder`
+      : 'Move to folder';
     folderGridHtml = `
-      <div class="ctx-label" style="padding-top:7px">Move to folder</div>
+      <div class="ctx-label" style="padding-top:7px">${moveLabel}</div>
       <div class="ctx-folder-grid cols-${cols}" style="--ctx-cols:${cols}">
         ${itemsHtml}
       </div>`;
   }
 
+  const isBulk = selectedFiles.size > 1 && selectedFiles.has(item);
+  const deleteLabel = isBulk ? `Delete ${selectedFiles.size} files` : 'Delete file';
   const html = `
-    <div class="ctx-item" id="ctxRenameBtn">${SVG_RENAME} Rename</div>
+    ${isBulk ? '' : `<div class="ctx-item" id="ctxRenameBtn">${SVG_RENAME} Rename</div>`}
     ${folderGridHtml}
     <div class="ctx-item" id="ctxNewFolderBtn">${SVG_NEWFOLDER} New folder…</div>
     <div class="ctx-divider"></div>
-    <div class="ctx-item ctx-delete" id="ctxDeleteBtn" style="color:#c05050">${SVG_TRASH} Delete file</div>`;
+    <div class="ctx-item ctx-delete" id="ctxDeleteBtn" style="color:#c05050">${SVG_TRASH} ${deleteLabel}</div>`;
   menu.innerHTML = html;
 
-  document.getElementById('ctxRenameBtn').onclick = e => {
+  const renameBtn = document.getElementById('ctxRenameBtn');
+  if (renameBtn) renameBtn.onclick = e => {
     e.stopPropagation();
     renderRenameCtxMenu(menu, item);
   };
+
+  // If the right-clicked file is part of a multi-selection, bulk operations apply
+  const bulkItems = selectedFiles.size > 1 && selectedFiles.has(item) ? [...selectedFiles] : null;
 
   menu.querySelectorAll('.ctx-fld').forEach(el => {
     el.onclick = async e => {
@@ -2795,7 +2804,12 @@ function renderMainCtxMenu(menu, item) {
       const targetHandle = folderName
         ? knownSubfolders.find(f => f.name === folderName)?.handle
         : rootDirHandle;
-      if (targetHandle || item.electronPath) await execMoveFile(item, targetHandle, folderName);
+      if (bulkItems) {
+        clearSelection();
+        for (const f of bulkItems) await execMoveFile(f, targetHandle, folderName);
+      } else {
+        if (targetHandle || item.electronPath) await execMoveFile(item, targetHandle, folderName);
+      }
     };
   });
 
@@ -2804,10 +2818,17 @@ function renderMainCtxMenu(menu, item) {
     renderNewFolderCtxMenu(menu, item);
   };
 
-  document.getElementById('ctxDeleteBtn').onclick = e => {
+  document.getElementById('ctxDeleteBtn').onclick = async e => {
     e.stopPropagation();
     removeCtxMenu();
-    execDeleteFile(item);
+    if (bulkItems) {
+      const n = bulkItems.length;
+      if (!confirm(`Delete ${n} file${n > 1 ? 's' : ''}? This cannot be undone.`)) return;
+      clearSelection();
+      for (const f of bulkItems) await execDeleteFile(f);
+    } else {
+      execDeleteFile(item);
+    }
   };
 }
 
