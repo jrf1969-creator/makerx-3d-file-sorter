@@ -65,7 +65,10 @@ Requires Node.js 18+ and npm.
 
 ## License
 
-MIT — free to use, inspect, and modify.
+© 2025 MakerX Designs. All Rights Reserved.
+
+This source code is published for **inspection purposes only** — so you can verify what the app does before running it. It may not be copied, modified, redistributed, or used as the basis for other projects. 
+
 
 ---
 
