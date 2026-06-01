@@ -72,6 +72,8 @@
   .icon-stl   { background: rgba(62,198,62,0.15);  color: var(--accent); }
   .icon-3mf   { background: rgba(86,255,86,0.12);  color: var(--neon); }
   .icon-zip   { background: rgba(62,198,62,0.08);  color: var(--text2); }
+  .icon-gcode { background: rgba(0,229,255,0.14);  color: #00e5ff; }
+  .icon-step  { background: rgba(245,158,11,0.14); color: #f59e0b; }
   .icon-other { background: rgba(90,93,102,0.15);  color: var(--text3); }
 
   .file-info { flex: 1; min-width: 0; }

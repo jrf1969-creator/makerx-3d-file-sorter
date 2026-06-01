@@ -6,10 +6,41 @@ const AdmZip = require('adm-zip');
 
 const VERSION_URL = 'https://makerxdesigns.com/makerx-view-sort-app/version.json';
 
-ipcMain.handle('open-external', (event, url) => shell.openExternal(url));
+ipcMain.handle('open-external', (event, url) => {
+  // Only follow web links — never hand shell.openExternal an arbitrary protocol
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) return shell.openExternal(url);
+});
 ipcMain.handle('get-version',   ()            => app.getVersion());
-ipcMain.handle('move-file',   async (e, src, dest) => { await fs.copyFile(src, dest); await fs.unlink(src); });
-ipcMain.handle('rename-file', async (e, oldPath, newPath) => { await fs.rename(oldPath, newPath); });
+
+// True when `dest` is an existing file *other than* `src`. Lets a Windows
+// case-only rename through (same underlying file) while blocking a real overwrite.
+async function wouldOverwrite(src, dest) {
+  try { await fs.access(dest); } catch { return false; }   // destination is free
+  try {
+    const rs = path.resolve(await fs.realpath(src));
+    const rd = path.resolve(await fs.realpath(dest));
+    return rs !== rd;
+  } catch { return true; }
+}
+
+ipcMain.handle('move-file', async (e, src, dest) => {
+  if (await wouldOverwrite(src, dest)) {
+    throw new Error('A file named "' + path.basename(dest) + '" already exists in the destination folder.');
+  }
+  try {
+    await fs.rename(src, dest);             // fast + atomic on the same volume
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;    // cross-device move — copy then delete
+    await fs.copyFile(src, dest);
+    await fs.unlink(src);
+  }
+});
+ipcMain.handle('rename-file', async (e, oldPath, newPath) => {
+  if (await wouldOverwrite(oldPath, newPath)) {
+    throw new Error('A file named "' + path.basename(newPath) + '" already exists here.');
+  }
+  await fs.rename(oldPath, newPath);
+});
 ipcMain.handle('delete-file', async (e, filePath)         => { await fs.unlink(filePath); });
 ipcMain.handle('create-dir',  async (e, dirPath)          => { await fs.mkdir(dirPath, { recursive: true }); });
 ipcMain.handle('read-file',   async (e, filePath)         => { return await fs.readFile(filePath); });
@@ -17,7 +48,7 @@ ipcMain.handle('read-file',   async (e, filePath)         => { return await fs.r
 // Returns the file list inside a ZIP — only metadata, no binary transfer
 ipcMain.handle('peek-zip', async (e, filePath) => {
   const zip        = new AdmZip(filePath);
-  const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp']);
+  const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp','gcode']);
   const entries    = zip.getEntries().filter(en => !en.isDirectory);
   const depths     = entries
     .filter(en => MODEL_EXTS.has(en.entryName.split('.').pop().toLowerCase()))
@@ -48,7 +79,7 @@ ipcMain.handle('open-folder-dialog', async () => {
 });
 
 ipcMain.handle('scan-folder', async (e, dirPath) => {
-  const SUPPORTED = new Set(['stl', '3mf', 'zip']);
+  const SUPPORTED = new Set(['stl', '3mf', 'zip', 'gcode']);
   const files = [], dirs = [];
   try {
     for (const entry of await fs.readdir(dirPath, { withFileTypes: true })) {
@@ -67,11 +98,13 @@ ipcMain.handle('scan-folder', async (e, dirPath) => {
   return { files, dirs };
 });
 ipcMain.handle('check-version', () => new Promise((resolve, reject) => {
-  https.get(VERSION_URL + '?t=' + Date.now(), { headers: { 'Cache-Control': 'no-cache' } }, res => {
+  const req = https.get(VERSION_URL + '?t=' + Date.now(), { headers: { 'Cache-Control': 'no-cache' } }, res => {
     let data = '';
     res.on('data', chunk => data += chunk);
     res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
-  }).on('error', reject);
+  });
+  req.on('error', reject);
+  req.setTimeout(8000, () => req.destroy(new Error('Update check timed out.')));
 }));
 
 function createWindow() {

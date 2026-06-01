@@ -259,7 +259,7 @@ function tweenToView(view, duration, onDone) {
 }
 
 // ── FOLDER OPEN ────────────────────────────────────────────────────────────────
-const SUPPORTED = ['stl','3mf','zip'];
+const SUPPORTED = ['stl','3mf','zip','gcode'];
 
 async function openFolder() {
   // Electron: use native dialog — gives real file system path directly
@@ -348,15 +348,17 @@ function injectZipChildren(item) {
   children.id = 'zip_' + item.name;
 
   for (const child of item.zipContents) {
-    const isPreviewable = ['stl','3mf'].includes(child.ext);
+    const isPreviewable = ['stl','3mf','gcode'].includes(child.ext);
     const cRow = document.createElement('div');
     cRow.className = 'zip-child';
-    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : 'icon-other';
+    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'gcode' ? 'icon-gcode' : 'icon-other';
+    const cName = child.path.split('/').pop();
+    const cDir  = child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : '';
     cRow.innerHTML = `
-      <div class="icon ${cIconClass}" style="width:22px;height:22px;font-size:9px;border-radius:3px">${child.ext.toUpperCase()}</div>
+      <div class="icon ${cIconClass}" style="width:22px;height:22px;font-size:9px;border-radius:3px">${escapeHtml(child.ext.toUpperCase())}</div>
       <div class="file-info">
-        <div class="file-name" title="${child.path}">${child.path.split('/').pop()}</div>
-        <div class="file-meta">${child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : ''}${formatSize(child.size)}</div>
+        <div class="file-name" title="${escapeHtml(child.path)}">${escapeHtml(cName)}</div>
+        <div class="file-meta">${escapeHtml(cDir)}${formatSize(child.size)}</div>
       </div>
     `;
     if (isPreviewable) {
@@ -412,9 +414,6 @@ async function loadFromDirectoryHandle(dirHandle) {
   let found       = 0;
   let renderPending = false;
 
-  // ── Sidebar row builder (shared by flush and zip-peek update) ────────────────
-  function buildRow(item) { return buildFileRow(item); }
-
   // ── Append only newly-discovered items to the sidebar ────────────────────────
   function flushNewItems() {
     renderPending = false;
@@ -424,7 +423,7 @@ async function loadFromDirectoryHandle(dirHandle) {
 
     const alreadyRendered = parseInt(list.dataset.rendered || '0', 10);
     for (const item of allFiles.slice(alreadyRendered)) {
-      list.appendChild(buildRow(item));
+      list.appendChild(buildFileRow(item));
     }
     list.dataset.rendered = allFiles.length;
     document.getElementById('fileCount').textContent = allFiles.length + ' files';
@@ -636,7 +635,7 @@ function hideScanBar() {
 // ── FILE LIST RENDER ───────────────────────────────────────────────────────────
 function renderFileList() {
   const list      = document.getElementById('fileList');
-  const supported = allFiles.filter(f => ['stl','3mf','zip'].includes(f.ext));
+  const supported = allFiles.filter(f => ['stl','3mf','zip','gcode'].includes(f.ext));
   list.innerHTML  = '';
   if (!supported.length) {
     list.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><p>No supported files found.</p></div>';
@@ -700,7 +699,7 @@ function showUnsupported(item) {
   panel.classList.remove('hidden');
   document.getElementById('unsupportedIconLabel').textContent = item.ext.toUpperCase();
   document.getElementById('viewerTitle').innerHTML =
-    `${item.name} <span style="color:var(--text3);font-size:11px;margin-left:6px">· Not supported</span>`;
+    `${escapeHtml(item.name)} <span style="color:var(--text3);font-size:11px;margin-left:6px">· Not supported</span>`;
 }
 
 // ── LOAD FILES ─────────────────────────────────────────────────────────────────
@@ -717,6 +716,8 @@ async function loadFile(item) {
       displayGeometry(geo, item.name);
     } else if (item.ext === '3mf') {
       await parse3MF(buf, item.name);
+    } else if (item.ext === 'gcode') {
+      displayToolpath(parseGcode(new TextDecoder().decode(buf)), item.name);
     }
   } catch (err) {
     hideLoading();
@@ -743,6 +744,8 @@ async function loadZipChild(child, zipItem) {
       displayGeometry(geo, displayName + ' (from ' + zipItem.name + ')');
     } else if (child.ext === '3mf') {
       await parse3MFBuffer(buf, displayName + ' (from ' + zipItem.name + ')');
+    } else if (child.ext === 'gcode') {
+      displayToolpath(parseGcode(new TextDecoder().decode(buf)), displayName + ' (from ' + zipItem.name + ')');
     }
   } catch (err) {
     hideLoading();
@@ -894,24 +897,7 @@ async function parse3MFBuffer(buffer, name) {
     return inlineObjects[id] || null;
   }
 
-  // Step 5: recursively expand an object (may have <components> instead of / in addition to <mesh>)
-  // Returns array of {verts, idxs, transform}
-  function expandObject(objEl, docObjects, transform) {
-    // If this object has a direct mesh — use it
-    const meshEl = objEl.querySelector('mesh');
-    if (meshEl) {
-      const verts = [];
-      for (const v of meshEl.querySelectorAll('vertices vertex'))
-        verts.push(+v.getAttribute('x'), +v.getAttribute('y'), +v.getAttribute('z'));
-      const idxs = [];
-      for (const t of meshEl.querySelectorAll('triangles triangle'))
-        idxs.push(+t.getAttribute('v1'), +t.getAttribute('v2'), +t.getAttribute('v3'));
-      if (verts.length && idxs.length) return [{ verts, idxs, transform }];
-    }
-    return [];
-  }
-
-  // Step 6: walk <build> items
+  // Step 5: walk <build> items
   const allPositions = [];
   const allIndices   = [];
   let vertOffset = 0;
@@ -981,17 +967,20 @@ async function parse3MFBuffer(buffer, name) {
   }
 
   if (!allPositions.length) {
-    const hasGcode = Object.keys(zip.files).some(f => f.toLowerCase().endsWith('.gcode'));
-    const emptyBuild = rootDoc.querySelectorAll('build item').length === 0 &&
-                       Object.keys(inlineObjects).length === 0 &&
-                       Object.keys(externalObjects).length === 0;
-    if (hasGcode && emptyBuild) {
-      throw new Error(
-        'This is a Bambu Studio sliced plate file.\n\n' +
-        'It contains GCode and print settings but no 3D geometry — ' +
-        'the source model was not embedded when it was saved.\n\n' +
-        'Open the original STL or 3MF design file instead.'
-      );
+    // Bambu Studio (and other slicers) save sliced plate files as .3mf with the
+    // toolpath G-code inside but no embedded mesh geometry. Render the toolpaths.
+    const gcodeEntries = Object.keys(zip.files)
+      .filter(f => !zip.files[f].dir && f.toLowerCase().endsWith('.gcode'));
+    if (gcodeEntries.length) {
+      // Prefer plate_1.gcode, then numeric plate order, then name order
+      gcodeEntries.sort((a, b) => {
+        const pa = /plate_(\d+)/i.exec(a), pb = /plate_(\d+)/i.exec(b);
+        if (pa && pb) return (+pa[1]) - (+pb[1]);
+        return a.localeCompare(b);
+      });
+      const gtext = await zip.files[gcodeEntries[0]].async('text');
+      displayToolpath(parseGcode(gtext), name);
+      return;
     }
     throw new Error('3MF contained no renderable geometry.');
   }
@@ -1051,6 +1040,222 @@ function combineTMF(outer, inner) {
   return res;
 }
 
+// ── G-CODE / BAMBU TOOLPATH VIEWER ───────────────────────────────────────────
+// Parses G-code text into extrusion line segments and renders them as a
+// slicer-style preview: colored line segments with a per-layer cyan→orange
+// gradient. Used for raw .gcode files and the embedded plate G-code found
+// inside Bambu Studio sliced .3mf files.
+
+function parseGcode(text) {
+  let absolute  = true;   // G90 (default) vs G91 — relative XYZ
+  let relativeE = false;  // M83 → relative extrusion; M82/default → absolute
+  let x = 0, y = 0, z = 0, e = 0;
+
+  // Region tracking — hide non-part extrusion so the preview shows just the model.
+  // Slicers tag regions with "; FEATURE:" (Bambu/Orca) or ";TYPE:" (Prusa). Anything
+  // extruded before the first region tag is startup priming (the diagonal prime line).
+  let currentFeature = '';
+  let seenFeature    = false;
+  // 'Custom' is where Bambu/Orca emit the startup prime line and filament-flush moves.
+  const isClutter = () => !seenFeature
+    || currentFeature.includes('prime tower')
+    || currentFeature.includes('wipe tower')
+    || currentFeature.includes('skirt')
+    || currentFeature.includes('custom');
+
+  // Segments stored in THREE space: printer (x,y,z) → three (x, z, -y) so the
+  // print stands upright on the existing Y-up grid (printer Z = build height).
+  const positions = [];   // flat x1,y1,z1, x2,y2,z2 …
+  const segLayerZ = [];    // printer Z (layer height) for each segment
+  let count = 0;
+  let minX=Infinity,maxX=-Infinity, minY=Infinity,maxY=-Infinity, minZ=Infinity,maxZ=-Infinity;
+
+  function pushSeg(x1, y1, z1, x2, y2, z2) {
+    positions.push(x1, z1, -y1,  x2, z2, -y2);
+    segLayerZ.push(z2);
+    const ys = [z1, z2], xs = [x1, x2], zs = [-y1, -y2];
+    for (let k = 0; k < 2; k++) {
+      if (xs[k] < minX) minX = xs[k];  if (xs[k] > maxX) maxX = xs[k];
+      if (ys[k] < minY) minY = ys[k];  if (ys[k] > maxY) maxY = ys[k];
+      if (zs[k] < minZ) minZ = zs[k];  if (zs[k] > maxZ) maxZ = zs[k];
+    }
+    count++;
+  }
+
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    let line = lines[li];
+    const fm = /^\s*;\s*(?:FEATURE|TYPE):\s*(.+?)\s*$/i.exec(line);
+    if (fm) { currentFeature = fm[1].toLowerCase(); seenFeature = true; }
+    const semi = line.indexOf(';');
+    if (semi !== -1) line = line.slice(0, semi);
+    line = line.trim();
+    if (!line) continue;
+
+    const sp  = line.indexOf(' ');
+    const cmd = (sp === -1 ? line : line.slice(0, sp)).toUpperCase();
+
+    if (cmd === 'G90') { absolute = true;  continue; }
+    if (cmd === 'G91') { absolute = false; continue; }
+    if (cmd === 'M82') { relativeE = false; continue; }
+    if (cmd === 'M83') { relativeE = true;  continue; }
+
+    if (cmd === 'G92') {
+      const toks = line.split(/\s+/);
+      for (let i = 1; i < toks.length; i++) {
+        const t = toks[i]; const a = t[0].toUpperCase(); const v = parseFloat(t.slice(1));
+        if (Number.isNaN(v)) continue;
+        if (a==='X') x=v; else if (a==='Y') y=v; else if (a==='Z') z=v; else if (a==='E') e=v;
+      }
+      continue;
+    }
+
+    if (cmd==='G0' || cmd==='G1' || cmd==='G2' || cmd==='G3') {
+      const toks = line.split(/\s+/);
+      let nx=x, ny=y, nz=z, eVal=e, hasE=false;
+      let ci=0, cj=0, hasIJ=false, rVal=0, hasR=false;
+      for (let i = 1; i < toks.length; i++) {
+        const t = toks[i]; if (!t) continue;
+        const a = t[0].toUpperCase(); const v = parseFloat(t.slice(1));
+        if (Number.isNaN(v)) continue;
+        if      (a==='X') nx = absolute ? v : x + v;
+        else if (a==='Y') ny = absolute ? v : y + v;
+        else if (a==='Z') nz = absolute ? v : z + v;
+        else if (a==='E') { hasE = true; eVal = relativeE ? e + v : v; }
+        else if (a==='I') { ci = v; hasIJ = true; }
+        else if (a==='J') { cj = v; hasIJ = true; }
+        else if (a==='R') { rVal = v; hasR = true; }
+      }
+      const extruding = hasE && (eVal - e) > 1e-5;
+      if (extruding && !isClutter()) {
+        if ((cmd==='G2' || cmd==='G3') && (hasIJ || hasR)) {
+          arcSegments(x, y, nx, ny, ci, cj, hasR ? rVal : null, cmd==='G2', z, pushSeg);
+        } else {
+          pushSeg(x, y, z, nx, ny, nz);
+        }
+      }
+      x = nx; y = ny; z = nz; if (hasE) e = eVal;
+    }
+  }
+
+  return { positions, segLayerZ, count,
+           bounds: { minX, maxX, minY, maxY, minZ, maxZ } };
+}
+
+// Interpolate a G2 (clockwise) / G3 (ccw) arc into short chords on the X/Y plane.
+function arcSegments(x0, y0, x1, y1, i, j, r, clockwise, z, push) {
+  let cx, cy;
+  if (r === null) {            // I/J form — center is relative offset from start
+    cx = x0 + i; cy = y0 + j;
+  } else {                     // R form — solve for center, fall back to chord
+    const dx = x1 - x0, dy = y1 - y0;
+    const d  = Math.hypot(dx, dy);
+    if (d === 0 || Math.abs(r) * 2 < d - 1e-6) { push(x0, y0, z, x1, y1, z); return; }
+    const h  = Math.sqrt(Math.max(0, r*r - (d/2)*(d/2)));
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    let ox = -dy / d * h, oy = dx / d * h;
+    if ((clockwise && r > 0) || (!clockwise && r < 0)) { ox = -ox; oy = -oy; }
+    cx = mx + ox; cy = my + oy;
+  }
+  const rad = Math.hypot(x0 - cx, y0 - cy);
+  const a0  = Math.atan2(y0 - cy, x0 - cx);
+  const a1  = Math.atan2(y1 - cy, x1 - cx);
+  let sweep = a1 - a0;
+  if (clockwise) { if (sweep >= 0) sweep -= 2 * Math.PI; }
+  else           { if (sweep <= 0) sweep += 2 * Math.PI; }
+  const steps = Math.max(2, Math.min(96, Math.ceil(Math.abs(sweep) * rad / 0.4)));
+  let px = x0, py = y0;
+  for (let s = 1; s <= steps; s++) {
+    const a  = a0 + sweep * (s / steps);
+    const nx = cx + rad * Math.cos(a);
+    const ny = cy + rad * Math.sin(a);
+    push(px, py, z, nx, ny, z);
+    px = nx; py = ny;
+  }
+}
+
+function displayToolpath(parsed, name) {
+  // Remove previous model
+  if (currentMesh) {
+    scene.remove(currentMesh);
+    currentMesh.geometry.dispose();
+    currentMesh.material.dispose();
+    currentMesh = null;
+  }
+
+  if (!parsed.count) {
+    hideLoading();
+    alert('No extrusion moves were found in this G-code.');
+    return;
+  }
+
+  const pos = new Float32Array(parsed.positions);
+
+  // Map each segment's layer height → a layer index for the gradient
+  const zList = parsed.segLayerZ;
+  const quant = z => Math.round(z * 100) / 100;
+  const uniq  = Array.from(new Set(zList.map(quant))).sort((a, b) => a - b);
+  const zIndex = new Map(uniq.map((z, i) => [z, i]));
+  const nLayers = Math.max(1, uniq.length);
+
+  // Cyan (#00e5ff) → Orange (#ff6b35) gradient by layer, matching the preview tool
+  const colors = new Float32Array(parsed.count * 6);
+  for (let s = 0; s < parsed.count; s++) {
+    const li = zIndex.get(quant(zList[s])) || 0;
+    const t  = nLayers > 1 ? li / (nLayers - 1) : 0;
+    const r = (0x00 + t * (0xff - 0x00)) / 255;
+    const g = (0xe5 + t * (0x6b - 0xe5)) / 255;
+    const b = (0xff + t * (0x35 - 0xff)) / 255;
+    const o = s * 6;
+    colors[o]=r; colors[o+1]=g; colors[o+2]=b;
+    colors[o+3]=r; colors[o+4]=g; colors[o+5]=b;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+  geo.computeBoundingBox();
+
+  // Center + scale to ~2 units (same framing as displayGeometry)
+  const bb = geo.boundingBox;
+  const center = new THREE.Vector3(); bb.getCenter(center);
+  const size   = new THREE.Vector3(); bb.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const scale  = 2.0 / maxDim;
+  geo.translate(-center.x, -center.y, -center.z);
+
+  const mat   = new THREE.LineBasicMaterial({ vertexColors: true });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.scale.set(scale, scale, scale);
+  scene.add(lines);
+  currentMesh = lines;
+
+  // Drop the grid under the model
+  const scaledSizeY = size.y * scale;
+  scene.children.filter(c => c instanceof THREE.GridHelper).forEach(g => {
+    g.position.y = -scaledSizeY / 2 - 0.05;
+  });
+
+  // Camera + auto-rotate, same as mesh view
+  camRadius = 3; camTheta = 0.6; camPhi = 1.1; camTarget.set(0, 0, 0);
+  updateCameraPos();
+  autoViewIndex = 0; stopAutoRotate(); autoRotate = true; startAutoRotate();
+
+  // UI: toolpath mode — hide the mesh-only estimate + color picker
+  document.getElementById('noFile').style.display = 'none';
+  document.getElementById('unsupportedPanel').classList.add('hidden');
+  document.getElementById('infoPanel').classList.add('hidden');
+  document.getElementById('colorRow').style.display = 'none';
+  document.getElementById('controlsHint').style.display = 'block';
+  // Printer dims: X = size.x, Y(depth) = size.z, Z(height) = size.y
+  document.getElementById('viewerTitle').innerHTML =
+    `${escapeHtml(name)} <span style="color:var(--text3);font-size:11px;margin-left:6px">· ` +
+    `${nLayers} layers · ${parsed.count.toLocaleString()} moves · ` +
+    `${size.x.toFixed(0)}×${size.z.toFixed(0)}×${size.y.toFixed(0)} mm</span>`;
+
+  hideLoading();
+}
+
 // ── DISPLAY ────────────────────────────────────────────────────────────────────
 function displayGeometry(geo, name, extra) {
   // Remove old model
@@ -1108,7 +1313,7 @@ function displayGeometry(geo, name, extra) {
   document.getElementById('infoPanel').classList.remove('hidden');
   document.getElementById('controlsHint').style.display = 'block';
   document.getElementById('btnRotate')?.classList.add('active');
-  document.getElementById('viewerTitle').innerHTML = `${name} <span>${formatSize(null, geo)}</span>`;
+  document.getElementById('viewerTitle').innerHTML = `${escapeHtml(name)} <span>${formatSize(null, geo)}</span>`;
   document.getElementById('infoTris').textContent = (geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3).toLocaleString();
   const objRow = document.getElementById('infoObjectsRow');
   if (extra?.objectCount > 1) {
@@ -1311,6 +1516,7 @@ function toggleSection(id) {
 
 function buildColorPicker() {
   const row = document.getElementById('colorRow');
+  row.style.display = '';  // restore if a G-code toolpath view had hidden it
   row.innerHTML = '<span style="font-size:11px;color:var(--text3);margin-right:3px">Color:</span>';
   for (const c of COLORS) {
     const dot = document.createElement('div');
@@ -1350,6 +1556,14 @@ function hideLoading() {
   document.getElementById('loadingOverlay').classList.add('hidden');
 }
 
+// HTML-escape any untrusted string (file names, ZIP entry paths, folder names)
+// before it is interpolated into innerHTML. Prevents a maliciously named file
+// from injecting markup or event handlers into the renderer.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function formatSize(bytes, geo) {
   if (geo) {
     const tris = geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3;
@@ -1367,7 +1581,7 @@ function updateStats() {
   const zips = allFiles.filter(f => f.ext === 'zip').length;
   const bar = document.getElementById('statsBar');
   const folderPart = currentFolderName
-    ? `<span style="color:var(--accent);margin-right:10px;font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:0.08em">📁 ${currentFolderName}</span>`
+    ? `<span style="color:var(--accent);margin-right:10px;font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:0.08em">📁 ${escapeHtml(currentFolderName)}</span>`
     : '';
   bar.innerHTML = folderPart + `<b>${stls}</b> STL &nbsp; <b>${tmfs}</b> 3MF &nbsp; <b>${zips}</b> ZIP`;
   // Update sidebar heading too
@@ -1400,21 +1614,25 @@ function buildFileRow(item) {
   row.className = 'file-item';
   row.dataset.name = item.name;
   row.id = 'row_' + CSS.escape(item.path || item.name);
-  const iconClass = item.ext === 'stl'  ? 'icon-stl'
-                  : item.ext === '3mf'  ? 'icon-3mf'
+  const iconClass = item.ext === 'stl'   ? 'icon-stl'
+                  : item.ext === '3mf'   ? 'icon-3mf'
+                  : item.ext === 'gcode' ? 'icon-gcode'
                   : ['stp','step'].includes(item.ext) ? 'icon-step'
                   : 'icon-zip';
+  const safeName = escapeHtml(item.name);
   row.innerHTML = `
     <input type="checkbox" class="file-item-check" title="Select">
-    <div class="icon ${iconClass}">${item.ext.toUpperCase()}</div>
+    <div class="icon ${iconClass}">${escapeHtml(item.ext.toUpperCase())}</div>
     <div class="file-info">
-      <div class="file-name" title="${item.name}">${item.name}</div>
-      <div class="file-meta">${item.path || ''}</div>
+      <div class="file-name" title="${safeName}">${safeName}</div>
+      <div class="file-meta">${escapeHtml(item.path || '')}</div>
     </div>
-    ${item.ext === 'zip' ? `<button class="expand-btn" onclick="toggleZip(event,'${item.name}')">▶</button>` : ''}
+    ${item.ext === 'zip' ? `<button class="expand-btn">▶</button>` : ''}
   `;
   const cb = row.querySelector('.file-item-check');
   cb.addEventListener('click', e => { e.stopPropagation(); toggleSelect(item, row, cb); });
+  const expandBtn = row.querySelector('.expand-btn');
+  if (expandBtn) expandBtn.addEventListener('click', e => { e.stopPropagation(); toggleZip(e, item.name); });
 
   if (['stp','step'].includes(item.ext)) {
     row.addEventListener('click', () => showUnsupported(item));
@@ -1473,7 +1691,7 @@ function showDragOverlay() {
   for (const folder of sorted) {
     const target = document.createElement('div');
     target.className = 'folder-drop-target';
-    target.innerHTML = `${SVG_FOLDER} ${folder.name}`;
+    target.innerHTML = `${SVG_FOLDER} ${escapeHtml(folder.name)}`;
     target.addEventListener('dragover',  e => { e.preventDefault(); target.classList.add('drag-over'); });
     target.addEventListener('dragleave', () => target.classList.remove('drag-over'));
     target.addEventListener('drop', async e => {
@@ -1608,7 +1826,7 @@ function renderMainCtxMenu(menu, item) {
     const itemsHtml = ordered.map(f => {
       if (!f) return `<div class="ctx-item" style="visibility:hidden;pointer-events:none"></div>`;
       if (f._root) return `<div class="ctx-item ctx-fld" data-folder="">${SVG_FOLDER} (root folder)</div>`;
-      return `<div class="ctx-item ctx-fld" data-folder="${f.name}">${SVG_FOLDER} ${f.name}</div>`;
+      return `<div class="ctx-item ctx-fld" data-folder="${escapeHtml(f.name)}">${SVG_FOLDER} ${escapeHtml(f.name)}</div>`;
     }).join('');
     const moveLabel = selectedFiles.size > 1 && selectedFiles.has(item)
       ? `Move ${selectedFiles.size} files to folder`
@@ -1681,7 +1899,7 @@ function renderRenameCtxMenu(menu, item) {
   menu.innerHTML = `
     <div class="ctx-label">Rename</div>
     <div class="ctx-input-wrap">
-      <input class="ctx-input" id="ctxNameInput" value="${item.name}" spellcheck="false">
+      <input class="ctx-input" id="ctxNameInput" value="${escapeHtml(item.name)}" spellcheck="false">
       <button class="ctx-ok"     id="ctxNameOk"     title="Confirm">✓</button>
       <button class="ctx-cancel" id="ctxNameCancel" title="Cancel">✕</button>
     </div>`;
@@ -1888,7 +2106,7 @@ function addReopenButton(dropZone, folderName, onClick) {
     <p style="font-size:10px;color:var(--text3);margin-bottom:7px;letter-spacing:0.08em;text-transform:uppercase;font-family:'Rajdhani',sans-serif;font-weight:600">Last folder</p>
     <button id="reopenBtn" style="display:inline-flex;align-items:center;gap:6px;padding:6px 16px;background:var(--accent-dim);border:1px solid var(--border2);color:var(--accent);font-family:'Rajdhani',sans-serif;font-weight:700;font-size:0.8rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;clip-path:polygon(6px 0%,100% 0%,calc(100% - 6px) 100%,0% 100%);transition:background 0.15s,border-color 0.15s,box-shadow 0.15s">
       <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
-      ${folderName}
+      ${escapeHtml(folderName)}
     </button>`;
   dropZone.appendChild(wrap);
   const btn = document.getElementById('reopenBtn');
@@ -1962,7 +2180,7 @@ async function bulkMovePrompt() {
   const sorted = [...knownSubfolders].sort((a, b) => a.name.localeCompare(b.name));
   menu.innerHTML =
     `<div class="ctx-label">Move ${selectedFiles.size} file${selectedFiles.size > 1 ? 's' : ''} to folder</div>` +
-    sorted.map(f => `<div class="ctx-item ctx-fld" data-folder="${f.name}">${SVG_FOLDER} ${f.name}</div>`).join('');
+    sorted.map(f => `<div class="ctx-item ctx-fld" data-folder="${escapeHtml(f.name)}">${SVG_FOLDER} ${escapeHtml(f.name)}</div>`).join('');
 
   menu.querySelectorAll('.ctx-fld').forEach(el => {
     el.onclick = async e => {
