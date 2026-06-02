@@ -259,7 +259,7 @@ function tweenToView(view, duration, onDone) {
 }
 
 // ── FOLDER OPEN ────────────────────────────────────────────────────────────────
-const SUPPORTED = ['stl','3mf','zip','gcode'];
+const SUPPORTED = ['stl','3mf','zip','gcode','step','stp'];
 
 async function openFolder() {
   // Electron: use native dialog — gives real file system path directly
@@ -718,6 +718,10 @@ async function loadFile(item) {
       await parse3MF(buf, item.name);
     } else if (item.ext === 'gcode') {
       displayToolpath(parseGcode(new TextDecoder().decode(buf)), item.name);
+    } else if (item.ext === 'step' || item.ext === 'stp') {
+      showLoading('Tessellating ' + item.name + ' (OpenCASCADE)…');
+      const geo = await parseStep(buf);
+      displayGeometry(geo, item.name);
     }
   } catch (err) {
     hideLoading();
@@ -746,6 +750,10 @@ async function loadZipChild(child, zipItem) {
       await parse3MFBuffer(buf, displayName + ' (from ' + zipItem.name + ')');
     } else if (child.ext === 'gcode') {
       displayToolpath(parseGcode(new TextDecoder().decode(buf)), displayName + ' (from ' + zipItem.name + ')');
+    } else if (child.ext === 'step' || child.ext === 'stp') {
+      showLoading('Tessellating ' + displayName + ' (OpenCASCADE)…');
+      const geo = await parseStep(buf);
+      displayGeometry(geo, displayName + ' (from ' + zipItem.name + ')');
     }
   } catch (err) {
     hideLoading();
@@ -798,6 +806,76 @@ function parseSTL(buffer) {
 
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+  geo.computeBoundingBox();
+  return geo;
+}
+
+// ── STEP / STP PARSER (OpenCASCADE WASM) ────────────────────────────────────────
+// Lazily initialises the occt-import-js engine on the first STEP file opened so
+// users who never touch CAD files don't pay the ~7.6 MB WASM init cost.
+let occtPromise = null;
+function initOcct() {
+  if (occtPromise) return occtPromise;
+  occtPromise = (async () => {
+    if (typeof occtimportjs !== 'function') {
+      throw new Error('STEP engine (occt-import-js.js) failed to load.');
+    }
+    // Read the WASM bytes locally — Chromium blocks fetch() of file:// in the
+    // packaged app, so go through Electron IPC; fall back to fetch in a browser.
+    let wasmBinary;
+    if (window.electronAPI?.readOcctWasm) {
+      wasmBinary = new Uint8Array(await window.electronAPI.readOcctWasm());
+    } else {
+      const resp = await fetch('libs/occt-import-js.wasm');
+      wasmBinary = new Uint8Array(await resp.arrayBuffer());
+    }
+    return await occtimportjs({ wasmBinary });
+  })();
+  occtPromise.catch(() => { occtPromise = null; }); // allow retry after a failure
+  return occtPromise;
+}
+
+// Parse a STEP/STP ArrayBuffer into one merged THREE.BufferGeometry (mm units),
+// ready for displayGeometry() — which derives volume, size and the print estimate.
+async function parseStep(buffer) {
+  const occt = await initOcct();
+  const params = {
+    linearUnit: 'millimeter',
+    linearDeflectionType: 'bounding_box_ratio',
+    linearDeflection: 0.002,   // tessellation fineness (smaller = smoother, slower)
+    angularDeflection: 0.5
+  };
+  const result = occt.ReadStepFile(new Uint8Array(buffer), params);
+  if (!result || !result.success || !result.meshes || !result.meshes.length) {
+    throw new Error('Could not parse this STEP file — it may be corrupt or an unsupported variant.');
+  }
+
+  const positions = [], normals = [];
+  for (const mesh of result.meshes) {
+    if (!mesh.attributes || !mesh.attributes.position) continue;
+    const pos   = mesh.attributes.position.array;
+    const norms = mesh.attributes.normal ? mesh.attributes.normal.array : null;
+    const idx   = mesh.index ? mesh.index.array : null;
+    if (idx) {
+      for (let i = 0; i < idx.length; i++) {
+        const p = idx[i] * 3;
+        positions.push(pos[p], pos[p + 1], pos[p + 2]);
+        if (norms) normals.push(norms[p], norms[p + 1], norms[p + 2]);
+      }
+    } else {
+      for (let i = 0; i < pos.length; i++) positions.push(pos[i]);
+      if (norms) for (let i = 0; i < norms.length; i++) normals.push(norms[i]);
+    }
+  }
+  if (!positions.length) throw new Error('STEP file contained no renderable geometry.');
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  if (normals.length === positions.length) {
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+  } else {
+    geo.computeVertexNormals();
+  }
   geo.computeBoundingBox();
   return geo;
 }
@@ -1634,9 +1712,7 @@ function buildFileRow(item) {
   const expandBtn = row.querySelector('.expand-btn');
   if (expandBtn) expandBtn.addEventListener('click', e => { e.stopPropagation(); toggleZip(e, item.name); });
 
-  if (['stp','step'].includes(item.ext)) {
-    row.addEventListener('click', () => showUnsupported(item));
-  } else if (item.ext !== 'zip') {
+  if (item.ext !== 'zip') {
     row.addEventListener('click', () => loadFile(item));
   } else {
     row.addEventListener('click', e => {

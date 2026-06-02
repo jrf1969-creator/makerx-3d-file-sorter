@@ -1,6 +1,6 @@
 # MakerX 3D File Sorter
 
-A free Windows desktop app for organizing your 3D print file library — STL, 3MF, and ZIP files.
+A free Windows desktop app for organizing your 3D print file library — STL, 3MF, STEP/STP, and ZIP files.
 
 **Download the latest release:** [makerxdesigns.com/utilities/3d-file-sorter.html](https://makerxdesigns.com/utilities/3d-file-sorter.html)
 
@@ -8,8 +8,8 @@ A free Windows desktop app for organizing your 3D print file library — STL, 3M
 
 ## What it does
 
-- Browse a folder of STL, 3MF, and ZIP files in a sidebar
-- Preview any STL or 3MF in a 3D viewer (no slicer required)
+- Browse a folder of STL, 3MF, STEP/STP, and ZIP files in a sidebar
+- Preview any STL, 3MF, or STEP/STP file in a 3D viewer (no slicer required) — STEP files are tessellated locally via an OpenCASCADE engine
 - Rename, move to subfolders, or delete files via right-click
 - Select multiple files with checkboxes to bulk move or bulk delete
 - Print weight, time, and cost estimates for any loaded file
@@ -32,6 +32,7 @@ The app installer triggers a Windows SmartScreen warning because it is not signe
 |---|---|
 | Desktop shell | [Electron](https://www.electronjs.org/) v28 |
 | 3D rendering | [Three.js](https://threejs.org/) r160 |
+| STEP/STP parsing | [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCASCADE, WASM) |
 | ZIP reading | [JSZip](https://stuk.github.io/jszip/) |
 | ZIP extraction (main process) | [adm-zip](https://github.com/cthackers/adm-zip) |
 | Installer | electron-builder (NSIS, x64) |
@@ -45,8 +46,10 @@ index.html      — entire UI, 3D viewer, file list, multi-select, print estimat
 main.js         — Electron main process (file system access, IPC handlers)
 preload.js      — context bridge exposing safe IPC APIs to the renderer
 libs/
-  three.min.js  — Three.js (bundled, no CDN dependency at runtime)
-  jszip.min.js  — JSZip (bundled)
+  three.min.js        — Three.js (bundled, no CDN dependency at runtime)
+  jszip.min.js        — JSZip (bundled)
+  occt-import-js.js   — OpenCASCADE STEP/STP loader (bundled)
+  occt-import-js.wasm — OpenCASCADE engine (bundled, ~7.6 MB)
 package.json    — project manifest and electron-builder config
 ```
 

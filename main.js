@@ -45,6 +45,12 @@ ipcMain.handle('delete-file', async (e, filePath)         => { await fs.unlink(f
 ipcMain.handle('create-dir',  async (e, dirPath)          => { await fs.mkdir(dirPath, { recursive: true }); });
 ipcMain.handle('read-file',   async (e, filePath)         => { return await fs.readFile(filePath); });
 
+// Returns the bundled OpenCASCADE WASM binary so the renderer can init the
+// STEP/STP engine. Read via Node fs because Chromium blocks fetch() of file://.
+ipcMain.handle('read-occt-wasm', async () => {
+  return await fs.readFile(path.join(__dirname, 'libs', 'occt-import-js.wasm'));
+});
+
 // Returns the file list inside a ZIP — only metadata, no binary transfer
 ipcMain.handle('peek-zip', async (e, filePath) => {
   const zip        = new AdmZip(filePath);
@@ -79,7 +85,7 @@ ipcMain.handle('open-folder-dialog', async () => {
 });
 
 ipcMain.handle('scan-folder', async (e, dirPath) => {
-  const SUPPORTED = new Set(['stl', '3mf', 'zip', 'gcode']);
+  const SUPPORTED = new Set(['stl', '3mf', 'zip', 'gcode', 'step', 'stp']);
   const files = [], dirs = [];
   try {
     for (const entry of await fs.readdir(dirPath, { withFileTypes: true })) {
