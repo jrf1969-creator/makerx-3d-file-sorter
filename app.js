@@ -76,12 +76,13 @@ let autoViewIndex = 0;
 
 const COLORS = [
   { hex: '#3ec63e', label: 'MakerX Green' },
-  { hex: '#56ff56', label: 'Neon' },
   { hex: '#e8f0e8', label: 'White' },
-  { hex: '#8aaa8a', label: 'Grey' },
-  { hex: '#4f9eff', label: 'Blue' },
+  { hex: '#9a9a9a', label: 'Grey' },
+  { hex: '#2f6fff', label: 'Blue' },
+  { hex: '#a855f7', label: 'Purple' },
   { hex: '#f59e0b', label: 'Amber' },
-  { hex: '#f87171', label: 'Red' },
+  { hex: '#facc15', label: 'Yellow' },
+  { hex: '#ef2b2b', label: 'Red' },
 ];
 let currentColor = COLORS[0].hex;
 let rootDirHandle   = null;   // FSA root directory handle
@@ -2293,3 +2294,13 @@ async function bulkMovePrompt() {
 initThree();
 buildColorPicker();
 checkLastFolder();
+showAppVersion();
+
+async function showAppVersion() {
+  const el = document.getElementById('appVersion');
+  if (!el || !window.electronAPI) return;
+  try {
+    const v = await window.electronAPI.getVersion();
+    if (v) el.textContent = 'v' + v;
+  } catch { /* keep static fallback */ }
+}
