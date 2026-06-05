@@ -349,10 +349,10 @@ function injectZipChildren(item) {
   children.id = 'zip_' + item.name;
 
   for (const child of item.zipContents) {
-    const isPreviewable = ['stl','3mf','gcode'].includes(child.ext);
+    const isPreviewable = ['stl','3mf','gcode','step','stp'].includes(child.ext);
     const cRow = document.createElement('div');
     cRow.className = 'zip-child';
-    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'gcode' ? 'icon-gcode' : 'icon-other';
+    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'gcode' ? 'icon-gcode' : ['step','stp'].includes(child.ext) ? 'icon-step' : 'icon-other';
     const cName = child.path.split('/').pop();
     const cDir  = child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : '';
     cRow.innerHTML = `
@@ -2065,10 +2065,57 @@ async function execRenameFile(item, newName) {
     item.name = newName;
     item.ext  = newName.split('.').pop().toLowerCase();
     item.path = item.path.replace(/[^/]+$/, newName);
-    refreshFileRow(item, oldPath);
+    refreshRenamedRow(item, oldPath);
   } catch (err) {
     alert('Rename failed: ' + err.message);
   }
+}
+
+// A renamed file STAYS in the unsorted list (unlike a move). Re-render its row
+// in place under the new name, then select it so it's highlighted and ready to
+// move. We also remember its position so focus can return to the next file once
+// this one is moved away.
+let renameAnchor = null;   // { item, index } of the most recently renamed file
+
+function refreshRenamedRow(item, oldPath) {
+  const oldId   = 'row_' + CSS.escape(oldPath || item.name);
+  const oldRow  = document.getElementById(oldId);
+  renameAnchor  = { item, index: Math.max(0, allFiles.indexOf(item)) };
+
+  // If it was an expanded zip, drop the now-orphaned children block.
+  const oldName  = (oldPath || item.name).split('/').pop();
+  const zipBlock = document.getElementById('zip_' + oldName);
+  if (zipBlock) zipBlock.remove();
+
+  if (!oldRow) return;
+  const newRow = buildFileRow(item);
+  oldRow.replaceWith(newRow);
+
+  // Highlight + mark ready to move.
+  clearSelection();
+  selectedFiles.add(item);
+  newRow.classList.add('selected');
+  const cb = newRow.querySelector('.file-item-check');
+  if (cb) cb.checked = true;
+  newRow.scrollIntoView({ block: 'nearest' });
+  updateMultiBar();
+}
+
+// After the just-renamed file is moved away, select the file that slid into its
+// spot so the user can keep working down the list from where they started.
+function focusNextAfterAnchor(index) {
+  if (!allFiles.length) return;
+  const next = allFiles[Math.min(index, allFiles.length - 1)];
+  if (!next) return;
+  const row = document.getElementById('row_' + CSS.escape(next.path || next.name));
+  if (!row) return;
+  clearSelection();
+  selectedFiles.add(next);
+  row.classList.add('selected');
+  const cb = row.querySelector('.file-item-check');
+  if (cb) cb.checked = true;
+  row.scrollIntoView({ block: 'nearest' });
+  updateMultiBar();
 }
 
 async function execMoveFile(item, targetHandle, targetFolderName) {
@@ -2093,6 +2140,12 @@ async function execMoveFile(item, targetHandle, targetFolderName) {
     const oldPath = item.path;
     item.path = targetFolderName ? targetFolderName + '/' + item.name : item.name;
     refreshFileRow(item, oldPath);
+    // If this was the file we just renamed, hop focus to the next one in place.
+    if (renameAnchor && renameAnchor.item === item) {
+      const idx = renameAnchor.index;
+      renameAnchor = null;
+      focusNextAfterAnchor(idx);
+    }
   } catch (err) {
     alert('Move failed: ' + err.message);
   }
