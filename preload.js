@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readOcctWasm:     ()                       => ipcRenderer.invoke('read-occt-wasm'),
   peekZip:          (filePath)              => ipcRenderer.invoke('peek-zip', filePath),
   extractZipEntry:  (zipPath, entryPath)    => ipcRenderer.invoke('extract-zip-entry', zipPath, entryPath),
-  moveFile:         (src, dest)             => ipcRenderer.invoke('move-file', src, dest),
+  moveFile:         (src, dest, onConflict) => ipcRenderer.invoke('move-file', src, dest, onConflict),
   renameFile:       (old, nw)               => ipcRenderer.invoke('rename-file', old, nw),
   deleteFile:       (filePath)              => ipcRenderer.invoke('delete-file', filePath),
   createDir:        (dirPath)               => ipcRenderer.invoke('create-dir', dirPath),

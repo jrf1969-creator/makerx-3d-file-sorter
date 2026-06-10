@@ -57,6 +57,7 @@ let camTheta = 0.6, camPhi = 1.1, camRadius = 3;
 let camTarget = new THREE.Vector3(0, 0, 0);
 let wireframe = false;
 let currentMesh = null;
+let currentPreviewItem = null;   // the file item currently shown in the viewer (for clear-on-move)
 
 // ── AUTO-ROTATE STATE ──────────────────────────────────────────────────────────
 let autoRotate       = true;   // on by default
@@ -301,12 +302,13 @@ async function loadFromDirectoryPath(dirPath) {
   knownSubfolders = dirs.map(d => ({ name: d.name, handle: null }));
 
   for (const f of files) {
-    allFiles.push({ name: f.name, ext: f.ext, size: f.size,
+    allFiles.push({ name: f.name, ext: f.ext, size: f.size, date: f.mtime || 0,
                     path: f.name, electronPath: f.path,
                     fsHandle: null, parentHandle: null, file: null });
   }
 
   hideScanBar();
+  allFiles.sort(compareItems);   // honour the active Sort-by choice on first render
 
   // Use buildFileRow so context menu + drag listeners are attached
   list.innerHTML = '';
@@ -705,6 +707,7 @@ function showUnsupported(item) {
 
 // ── LOAD FILES ─────────────────────────────────────────────────────────────────
 async function loadFile(item) {
+  currentPreviewItem = item;
   setActive(item.name);
   showLoading('Loading ' + item.name + '...');
   try {
@@ -731,6 +734,7 @@ async function loadFile(item) {
 }
 
 async function loadZipChild(child, zipItem) {
+  currentPreviewItem = zipItem;   // moving/deleting the parent zip clears this preview
   const displayName = child.path.split('/').pop();
   setActive(child.path.split('/').pop());
   showLoading('Extracting ' + displayName + '...');
@@ -1687,6 +1691,91 @@ function filterFiles() {
   }, 120);
 }
 
+// ── SORT (Name / Date / Size, asc / desc) ─────────────────────────────────────
+const SORT_LS_KEY = 'mx_sort';
+let sortField = 'name';   // 'name' | 'date' | 'size'
+let sortDir   = 'asc';    // 'asc'  | 'desc'
+
+function loadSortPref() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SORT_LS_KEY) || 'null');
+    if (s && ['name','date','size'].includes(s.f)) sortField = s.f;
+    if (s && ['asc','desc'].includes(s.d))         sortDir   = s.d;
+  } catch (_) {}
+}
+function saveSortPref() {
+  try { localStorage.setItem(SORT_LS_KEY, JSON.stringify({ f: sortField, d: sortDir })); } catch (_) {}
+}
+
+// Compare two file items by the active field; ties (and name field) fall back to
+// a natural, case-insensitive name compare so the order is always stable.
+function compareItems(a, b) {
+  let r = 0;
+  if (sortField === 'date')      r = (a.date || 0) - (b.date || 0);
+  else if (sortField === 'size') r = (a.size || 0) - (b.size || 0);
+  if (r === 0) r = String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' });
+  return sortDir === 'desc' ? -r : r;
+}
+
+// Re-render the flat list in the current sort order, preserving selection.
+function renderFlatList() {
+  const list = document.getElementById('fileList');
+  if (!list) return;
+  list.innerHTML = '';
+  list.dataset.rendered = '0';
+  if (!allFiles.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📁</div><p>No supported files found.</p></div>';
+    return;
+  }
+  for (const item of allFiles) {
+    const row = buildFileRow(item);
+    if (selectedFiles.has(item)) {
+      row.classList.add('selected');
+      const cb = row.querySelector('.file-item-check');
+      if (cb) cb.checked = true;
+    }
+    list.appendChild(row);
+    if (item.ext === 'zip' && item.zipContents?.length) injectZipChildren(item);
+  }
+  list.dataset.rendered = allFiles.length;
+  document.getElementById('fileCount').textContent = allFiles.length + ' files';
+  filterFiles();   // re-apply any active text filter to the freshly built rows
+}
+
+// Apply the current sort. In the AUTO grouped view, re-sort within each group;
+// otherwise re-render the flat list.
+function applySort() {
+  allFiles.sort(compareItems);
+  if (typeof autoApplySort === 'function' && autoApplySort(compareItems)) return;
+  renderFlatList();
+}
+
+function onSortFieldChange() {
+  const sel = document.getElementById('sortField');
+  if (sel) sortField = sel.value;
+  saveSortPref();
+  applySort();
+}
+function toggleSortDir() {
+  sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  syncSortDirBtn();
+  saveSortPref();
+  applySort();
+}
+function syncSortDirBtn() {
+  const btn = document.getElementById('sortDirBtn');
+  if (!btn) return;
+  btn.textContent = sortDir === 'asc' ? '↑' : '↓';
+  btn.title = sortDir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending';
+}
+// Reflect the saved preference into the controls at startup.
+function initSort() {
+  loadSortPref();
+  const sel = document.getElementById('sortField');
+  if (sel) sel.value = sortField;
+  syncSortDirBtn();
+}
+
 // ── GLOBAL ROW BUILDER ────────────────────────────────────────────────────────
 function buildFileRow(item) {
   const row = document.createElement('div');
@@ -2029,7 +2118,15 @@ function renderNewFolderCtxMenu(menu, item) {
         knownSubfolders.push({ name: folderName, handle: newHandle });
         knownSubfolders.sort((a, b) => a.name.localeCompare(b.name));
       }
-      await execMoveFile(item, newHandle, folderName);
+      // If the clicked file is part of a multi-selection, move ALL of them.
+      const bulkItems = selectedFiles.size > 1 && selectedFiles.has(item) ? [...selectedFiles] : null;
+      if (bulkItems) {
+        clearSelection();
+        if (typeof autoResetMovePolicy === 'function') autoResetMovePolicy();
+        for (const f of bulkItems) await execMoveFile(f, newHandle, folderName);
+      } else {
+        await execMoveFile(item, newHandle, folderName);
+      }
     } catch (err) {
       alert('Could not create folder: ' + err.message);
     }
@@ -2121,11 +2218,31 @@ function focusNextAfterAnchor(index) {
 async function execMoveFile(item, targetHandle, targetFolderName) {
   try {
     if (item.electronPath) {
-      const destDir  = targetFolderName ? rootDirPath + '\\' + targetFolderName : rootDirPath;
-      const destPath = destDir + '\\' + item.name;
-      await window.electronAPI.moveFile(item.electronPath, destPath);
-      item.electronPath = destPath;
-      item.file = null;
+      const destDir = targetFolderName ? rootDirPath + '\\' + targetFolderName : rootDirPath;
+      let onConflict;                       // undefined first try → throws on collision
+      for (;;) {
+        try {
+          const finalName = await window.electronAPI.moveFile(
+            item.electronPath, destDir + '\\' + item.name, onConflict);
+          if (finalName && finalName !== item.name) {        // "keep both" renamed it
+            item.name = finalName;
+            item.ext  = finalName.split('.').pop().toLowerCase();
+          }
+          item.electronPath = destDir + '\\' + item.name;
+          item.file = null;
+          break;
+        } catch (err) {
+          // On a name collision, ask how to resolve (skip / keep both / overwrite).
+          if (/already exists/i.test(err.message || '') &&
+              typeof autoResolveMoveConflict === 'function') {
+            const res = await autoResolveMoveConflict(item.name);
+            if (res.strategy === 'skip') return;             // leave the file where it is
+            onConflict = res.strategy;                       // 'rename' | 'overwrite' → retry
+            continue;
+          }
+          throw err;
+        }
+      }
     } else {
       const file      = await getFileForItem(item);
       const buffer    = await file.arrayBuffer();
@@ -2151,7 +2268,28 @@ async function execMoveFile(item, targetHandle, targetFolderName) {
   }
 }
 
+// Reset the viewer back to the empty "No file selected" state.
+function clearViewer() {
+  if (currentMesh) {
+    scene.remove(currentMesh);
+    currentMesh.geometry.dispose();
+    currentMesh.material.dispose();
+    currentMesh = null;
+  }
+  stopAutoRotate();
+  currentPreviewItem = null;
+  hideLoading();
+  document.getElementById('noFile').style.display = '';
+  document.getElementById('unsupportedPanel').classList.add('hidden');
+  document.getElementById('infoPanel').classList.add('hidden');
+  document.getElementById('controlsHint').style.display = 'none';
+  document.getElementById('viewerTitle').textContent = 'No file selected';
+  document.querySelectorAll('.file-item.active, .zip-child.active').forEach(el => el.classList.remove('active'));
+}
+
 function refreshFileRow(item, oldPath) {
+  // If the file just moved/deleted is the one in the viewer, clear the preview.
+  if (currentPreviewItem === item) clearViewer();
   // Remove the moved file from the sidebar — it's no longer an unsorted root file
   const oldId  = 'row_' + CSS.escape(oldPath || item.name);
   const oldRow = document.getElementById(oldId);
@@ -2255,6 +2393,7 @@ function toggleSelect(item, row, cb) {
     selectedFiles.add(item);
     row.classList.add('selected');
     cb.checked = true;
+    if (item.ext !== 'zip') loadFile(item);   // ticking a box also previews that item
   }
   updateMultiBar();
 }
@@ -2346,6 +2485,7 @@ async function bulkMovePrompt() {
 // ── INIT ───────────────────────────────────────────────────────────────────────
 initThree();
 buildColorPicker();
+initSort();
 checkLastFolder();
 showAppVersion();
 

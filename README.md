@@ -8,8 +8,9 @@ A free Windows desktop app for organizing your 3D print file library — STL, 3M
 
 ## What it does
 
-- Browse a folder of STL, 3MF, STEP/STP, and ZIP files in a sidebar
-- Preview any STL, 3MF, or STEP/STP file in a 3D viewer (no slicer required) — STEP files are tessellated locally via an OpenCASCADE engine
+- **AUTO sort (new in 2.0)** — group an entire folder into category folders with one click, each with a "Move All" button; an offline keyword classifier recognises names in several languages, files that don't match stay in an "Unsorted" list, and the app can suggest new groups it discovers
+- Browse a folder of STL, 3MF, STEP/STP, and ZIP files in a sidebar, **sorted by name, date, or size** (new in 2.0)
+- Preview any STL, 3MF, or STEP/STP file in a 3D viewer (no slicer required) — STEP files are tessellated locally via an OpenCASCADE engine; **ticking a file's checkbox previews it too** (new in 2.0)
 - Rename, move to subfolders, or delete files via right-click
 - Select multiple files with checkboxes to bulk move or bulk delete
 - Print weight, time, and cost estimates for any loaded file
@@ -42,7 +43,10 @@ The app installer triggers a Windows SmartScreen warning because it is not signe
 ## Source layout
 
 ```
-index.html      — entire UI, 3D viewer, file list, multi-select, print estimates
+index.html      — UI shell: 3D viewer, file list, multi-select, print estimates
+app.js          — renderer logic: file list, viewer, estimates, sort-by, selection
+auto-sort.js    — offline keyword classifier + the AUTO-sort grouped view
+style.css       — app styles
 main.js         — Electron main process (file system access, IPC handlers)
 preload.js      — context bridge exposing safe IPC APIs to the renderer
 libs/

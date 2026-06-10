@@ -24,7 +24,7 @@
       <a href="https://makerxdesigns.com/links.html" target="_blank">Links</a>
     </div>
     <div class="mx-nav-right">
-      <span class="mx-version" id="appVersion" title="Installed version">v1.4.2</span>
+      <span class="mx-version" id="appVersion" title="Installed version">v2.0.0</span>
       <span class="mx-badge">Free Utility</span>
       <a class="mx-profile-btn" href="https://www.crealitycloud.com/user-profile/3092010586" target="_blank">
         <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -48,6 +48,11 @@
       <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg>
       <span id="updateBtnLabel">Check for Updates</span>
     </button>
+    <label class="auto-toggle" id="autoToggleWrap" title="AUTO sort: group every file into its category folder, then move each group with one click">
+      <input type="checkbox" id="autoSortToggle">
+      <span class="auto-toggle-dot"></span>
+      <span class="auto-toggle-label">AUTO sort</span>
+    </label>
     <button class="open-btn" onclick="openFolder()">
       <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
       Open Folder
@@ -62,6 +67,15 @@
     </div>
     <div class="search-wrap" id="searchWrap" style="display:none">
       <input class="search-input" id="searchInput" type="text" placeholder="Filter files…" oninput="filterFiles()">
+      <div class="sort-wrap">
+        <span class="sort-label">Sort by</span>
+        <select class="sort-select" id="sortField" onchange="onSortFieldChange()" title="Sort files by">
+          <option value="name">Name</option>
+          <option value="date">Date</option>
+          <option value="size">Size</option>
+        </select>
+        <button class="sort-dir" id="sortDirBtn" onclick="toggleSortDir()" title="Ascending — click for descending">↑</button>
+      </div>
     </div>
     <div class="file-list" id="fileList">
       <div class="empty-state" id="dropZone" onclick="openFolder()" style="cursor:pointer">
@@ -295,6 +309,7 @@
 
 <!-- App -->
 <script src="app.js"></script>
+<script src="auto-sort.js"></script>
 
 </body>
 </html>

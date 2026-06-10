@@ -23,9 +23,27 @@ async function wouldOverwrite(src, dest) {
   } catch { return true; }
 }
 
-ipcMain.handle('move-file', async (e, src, dest) => {
+// Returns a destination path that does not exist yet, appending " (1)", " (2)"…
+async function uniqueDest(dest) {
+  const dir = path.dirname(dest), ext = path.extname(dest), base = path.basename(dest, ext);
+  let candidate = dest, i = 1;
+  for (;;) {
+    try { await fs.access(candidate); } catch { return candidate; }   // free → use it
+    candidate = path.join(dir, base + ' (' + (i++) + ')' + ext);
+  }
+}
+
+// onConflict: undefined/'error' (throw, default), 'rename' (keep both), 'overwrite'.
+// Returns the FINAL file name actually used (may differ from the original on rename).
+ipcMain.handle('move-file', async (e, src, dest, onConflict) => {
   if (await wouldOverwrite(src, dest)) {
-    throw new Error('A file named "' + path.basename(dest) + '" already exists in the destination folder.');
+    if (onConflict === 'overwrite') {
+      await fs.unlink(dest);
+    } else if (onConflict === 'rename') {
+      dest = await uniqueDest(dest);
+    } else {
+      throw new Error('A file named "' + path.basename(dest) + '" already exists in the destination folder.');
+    }
   }
   try {
     await fs.rename(src, dest);             // fast + atomic on the same volume
@@ -34,6 +52,7 @@ ipcMain.handle('move-file', async (e, src, dest) => {
     await fs.copyFile(src, dest);
     await fs.unlink(src);
   }
+  return path.basename(dest);
 });
 ipcMain.handle('rename-file', async (e, oldPath, newPath) => {
   if (await wouldOverwrite(oldPath, newPath)) {
@@ -96,7 +115,7 @@ ipcMain.handle('scan-folder', async (e, dirPath) => {
         if (SUPPORTED.has(ext)) {
           const p = path.join(dirPath, entry.name);
           const stat = await fs.stat(p);
-          files.push({ name: entry.name, ext, path: p, size: stat.size });
+          files.push({ name: entry.name, ext, path: p, size: stat.size, mtime: stat.mtimeMs });
         }
       }
     }
@@ -135,6 +154,19 @@ function createWindow() {
     } else {
       callback(false);
     }
+  });
+
+  // Hardening: this window's preload bridge can read/move/delete files, so it
+  // must never load anything but the bundled page. Block every top-level
+  // navigation (stray file drops onto the window, injected links, etc.) and
+  // refuse to open child windows. Real web links are sent to the system browser.
+  win.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   win.loadFile('index.html');

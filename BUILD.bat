@@ -37,7 +37,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo ============================================
 echo  SUCCESS! Installer is in the dist\ folder.
-echo  File: dist\MakerX 3D Viewer Setup 1.0.0.exe
+echo  File: dist\MakerX 3D Viewer 2.0 Setup 2.0.0.exe
 echo ============================================
 echo.
 pause
