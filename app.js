@@ -354,6 +354,10 @@ function injectZipChildren(item) {
     const isPreviewable = ['stl','3mf','gcode','step','stp'].includes(child.ext);
     const cRow = document.createElement('div');
     cRow.className = 'zip-child';
+    // Back-references for keyboard navigation (internal zip files can't be moved/deleted)
+    cRow._child = child;
+    cRow._zipItem = item;
+    cRow._previewable = isPreviewable;
     const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'gcode' ? 'icon-gcode' : ['step','stp'].includes(child.ext) ? 'icon-step' : 'icon-other';
     const cName = child.path.split('/').pop();
     const cDir  = child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : '';
@@ -810,7 +814,14 @@ function parseSTL(buffer) {
   }
 
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+  // Cura/Uranium (and some other exporters) write every facet normal as 0,0,0,
+  // which makes lighting render the whole model solid black. If any stored
+  // normal is degenerate, recompute from geometry — the mesh is non-indexed, so
+  // this yields correct flat-shaded faces — instead of trusting the file.
+  let degenerateNormals = normals.length === 0;
+  for (let i = 0; i < normals.length; i += 3) { if (normals[i] === 0 && normals[i+1] === 0 && normals[i+2] === 0) { degenerateNormals = true; break; } }
+  if (degenerateNormals) { geo.computeVertexNormals(); }
+  else { geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3)); }
   geo.computeBoundingBox();
   return geo;
 }
@@ -1782,6 +1793,7 @@ function buildFileRow(item) {
   row.className = 'file-item';
   row.dataset.name = item.name;
   row.id = 'row_' + CSS.escape(item.path || item.name);
+  row._item = item;   // back-reference for keyboard navigation
   const iconClass = item.ext === 'stl'   ? 'icon-stl'
                   : item.ext === '3mf'   ? 'icon-3mf'
                   : item.ext === 'gcode' ? 'icon-gcode'
@@ -2497,3 +2509,346 @@ async function showAppVersion() {
     if (v) el.textContent = 'v' + v;
   } catch { /* keep static fallback */ }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  KEYBOARD NAVIGATION
+//  Arrow / Page / Delete driving of the sidebar file list. A single "cursor"
+//  (the .kbd-focus row) walks the visible rows; landing on a previewable file
+//  shows it in the viewer. Behaviour (per the TODO spec):
+//    ↑ / ↓        move one row (preview the landed file)
+//    PgUp / PgDn  move one visible page (preview the landed file)
+//    →  on a normal file        → open the folder (move/rename/delete) menu
+//    →  on a ZIP row            → expand it (then ↓ walks its inner files)
+//    →  on a zip-INNER file     → open the folder menu on the PARENT zip
+//                                 (inner files can't be moved/deleted)
+//    ↓  past the last zip child → collapse the zip, select the next file below
+//    ←  on an expanded zip      → collapse it;  on a zip child → jump to the zip
+//    Delete on a file           → delete it, select the next file
+//    Delete on a zip-inner file → themed "can't move/delete inside a zip" toast
+//  When the folder menu is open: ↑↓←→ walk its cells, Enter activates, Esc/←
+//  (at the leftmost column) closes it and returns to the file.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let kbdFocusRow = null;   // the DOM row the keyboard cursor currently sits on
+const ctxKbd = { open: false, grid: [], pos: { r: 0, c: 0 }, returnRow: null };
+
+// All currently-navigable rows in document order: top-level files plus the inner
+// files of any EXPANDED zip. Filtered/collapsed rows are skipped.
+function navRows() {
+  const list = document.getElementById('fileList');
+  if (!list) return [];
+  return [...list.querySelectorAll('.file-item, .zip-child')].filter(el => {
+    if (el.offsetParent === null) return false;                 // hidden / filtered / collapsed
+    if (el.classList.contains('zip-child')) {
+      const block = el.closest('.zip-children');
+      if (!block || !block.classList.contains('open')) return false;
+    }
+    return true;
+  });
+}
+
+// Move the cursor to `row`. When `preview` is true, a previewable file is loaded
+// into the viewer; ZIP rows (and non-previewable inner files) only highlight.
+function setKbdFocus(row, preview = true) {
+  if (!row) return;
+  if (kbdFocusRow && kbdFocusRow !== row) kbdFocusRow.classList.remove('kbd-focus');
+  kbdFocusRow = row;
+  row.classList.add('kbd-focus');
+  row.scrollIntoView({ block: 'nearest' });
+  if (!preview) return;
+  if (row.classList.contains('zip-child')) {
+    if (row._previewable && row._child && row._zipItem) loadZipChild(row._child, row._zipItem);
+  } else if (row._item && row._item.ext !== 'zip') {
+    loadFile(row._item);
+  }
+}
+
+function kbdMove(dir) {
+  const rows = navRows();
+  if (!rows.length) return;
+  const idx = kbdFocusRow ? rows.indexOf(kbdFocusRow) : -1;
+  if (idx === -1) { setKbdFocus(rows[dir > 0 ? 0 : rows.length - 1]); return; }
+
+  // ↓ on the last child of an expanded zip → collapse the zip, land on the file below it.
+  if (dir > 0 && kbdFocusRow.classList.contains('zip-child')) {
+    const block = kbdFocusRow.closest('.zip-children');
+    const kids  = block ? [...block.querySelectorAll('.zip-child')] : [];
+    if (kids.length && kids[kids.length - 1] === kbdFocusRow) {
+      const owner = block.previousElementSibling;   // the zip .file-item
+      const name  = block.id.replace(/^zip_/, '');
+      collapseZip(name);
+      const rows2 = navRows();
+      const oi = rows2.indexOf(owner);
+      setKbdFocus(rows2[oi + 1] || owner, !!(rows2[oi + 1]));
+      return;
+    }
+  }
+
+  const ni = Math.max(0, Math.min(rows.length - 1, idx + dir));
+  if (ni !== idx) setKbdFocus(rows[ni]);
+}
+
+function kbdPage(dir) {
+  const rows = navRows();
+  if (!rows.length) return;
+  let idx = kbdFocusRow ? rows.indexOf(kbdFocusRow) : -1;
+  if (idx === -1) idx = dir > 0 ? 0 : rows.length - 1;
+  const list = document.getElementById('fileList');
+  const rh   = (rows[idx] && rows[idx].offsetHeight) || 40;
+  const page = Math.max(1, Math.floor(((list && list.clientHeight) || 400) / rh) - 1);
+  const ni   = Math.max(0, Math.min(rows.length - 1, idx + dir * page));
+  if (ni !== idx) setKbdFocus(rows[ni]);
+}
+
+function collapseZip(name) {
+  const block = document.getElementById('zip_' + name);
+  if (block && block.classList.contains('open')) {
+    block.classList.remove('open');
+    _syncExpandBtn(name, false);
+  }
+}
+
+function expandZipRow(row, item) {
+  const block = document.getElementById('zip_' + item.name);
+  if (!block) {
+    // Children not peeked yet — fetch metadata, then open.
+    if (item.electronPath) {
+      peekZipElectron(item).then(() => {
+        const b = document.getElementById('zip_' + item.name);
+        if (b) { b.classList.add('open'); _syncExpandBtn(item.name, true); }
+      });
+    }
+    return;
+  }
+  if (!block.classList.contains('open')) {
+    block.classList.add('open');
+    _syncExpandBtn(item.name, true);
+  }
+}
+
+function kbdRight() {
+  if (!kbdFocusRow) return;
+  if (kbdFocusRow.classList.contains('zip-child')) {
+    // Inner zip files can't be moved/deleted — open the menu on the PARENT zip.
+    const block = kbdFocusRow.closest('.zip-children');
+    const owner = block && block.previousElementSibling;
+    if (owner && owner._item) openFolderMenuForRow(owner, owner._item);
+    return;
+  }
+  const item = kbdFocusRow._item;
+  if (!item) return;
+  if (item.ext === 'zip') expandZipRow(kbdFocusRow, item);
+  else openFolderMenuForRow(kbdFocusRow, item);
+}
+
+function kbdLeft() {
+  if (!kbdFocusRow) return;
+  const item = kbdFocusRow._item;
+  if (item && item.ext === 'zip') {
+    const block = document.getElementById('zip_' + item.name);
+    if (block && block.classList.contains('open')) { collapseZip(item.name); return; }
+  }
+  if (kbdFocusRow.classList.contains('zip-child')) {
+    const owner = kbdFocusRow.closest('.zip-children')?.previousElementSibling;
+    if (owner) setKbdFocus(owner, false);
+  }
+}
+
+async function kbdDelete() {
+  if (!kbdFocusRow) return;
+  if (kbdFocusRow.classList.contains('zip-child')) { showZipBlockedToast(); return; }
+  const item = kbdFocusRow._item;
+  if (!item) return;
+  // The refreshFileRow wrapper (below) picks the next file to focus once the row
+  // is removed, so we just trigger the delete here.
+  await execDeleteFile(item);
+}
+
+// ── Themed "can't touch a file inside a zip" toast ──────────────────────────────
+function showZipBlockedToast() {
+  let t = document.getElementById('mxKbdToast');
+  if (t) t.remove();
+  t = document.createElement('div');
+  t.id = 'mxKbdToast';
+  t.className = 'mx-toast';
+  t.innerHTML = `<span class="mx-toast-icon">!</span><span>Files <b>inside a ZIP</b> can't be moved or deleted.</span>`;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  clearTimeout(showZipBlockedToast._t);
+  showZipBlockedToast._t = setTimeout(() => {
+    t.classList.remove('show');
+    setTimeout(() => t.remove(), 220);
+  }, 2600);
+}
+
+// ── Folder (context) menu — keyboard driven ─────────────────────────────────────
+function openFolderMenuForRow(row, item) {
+  const rect = row.getBoundingClientRect();
+  const synthetic = {
+    clientX: rect.left + Math.min(rect.width * 0.55, 160),
+    clientY: rect.top + rect.height - 4,
+    preventDefault() {}, stopPropagation() {},
+  };
+  showCtxMenu(synthetic, item);
+  const menu = document.getElementById('ctxMenu');
+  if (!menu) return;                       // no folder open → showCtxMenu bailed
+  ctxKbd.grid = buildCtxGrid(menu);
+  if (!ctxKbd.grid.length) return;
+  ctxKbd.open = true;
+  ctxKbd.returnRow = row;
+  setCtxPos(0, 0);
+}
+
+// Build a 2-D navigation grid from the rendered menu. Single full-width rows
+// (Rename / New folder / Delete) are 1-column rows; the folder grid contributes
+// `cols`-wide rows (its DOM order is already row-major, with hidden placeholders).
+function buildCtxGrid(menu) {
+  const grid = [];
+  for (const child of menu.children) {
+    if (child.classList.contains('ctx-item')) {
+      grid.push([child]);
+    } else if (child.classList.contains('ctx-folder-grid')) {
+      let cols = parseInt(child.style.getPropertyValue('--ctx-cols'), 10);
+      if (!cols || cols < 1) {
+        const m = (child.className.match(/cols-(\d+)/) || [])[1];
+        cols = m ? parseInt(m, 10) : 1;
+      }
+      const cells = [...child.querySelectorAll('.ctx-item')];
+      for (let r = 0; r * cols < cells.length; r++) {
+        const rowCells = [];
+        for (let c = 0; c < cols; c++) {
+          const cell = cells[r * cols + c];
+          if (cell && cell.style.visibility !== 'hidden') rowCells.push(cell);
+        }
+        if (rowCells.length) grid.push(rowCells);
+      }
+    }
+    // .ctx-label / .ctx-divider are skipped
+  }
+  return grid;
+}
+
+function setCtxPos(r, c) {
+  if (!ctxKbd.grid[r]) return;
+  c = Math.max(0, Math.min(ctxKbd.grid[r].length - 1, c));
+  document.querySelectorAll('.ctx-item.kbd-ctx-focus').forEach(el => el.classList.remove('kbd-ctx-focus'));
+  const cell = ctxKbd.grid[r][c];
+  cell.classList.add('kbd-ctx-focus');
+  cell.scrollIntoView({ block: 'nearest' });
+  ctxKbd.pos = { r, c };
+}
+
+function closeCtxKbd() {
+  ctxKbd.open = false;
+  removeCtxMenu();
+  const back = ctxKbd.returnRow;
+  ctxKbd.returnRow = null;
+  ctxKbd.grid = [];
+  if (back && document.body.contains(back)) setKbdFocus(back, false);
+}
+
+function handleCtxKey(e) {
+  const menu = document.getElementById('ctxMenu');
+  if (!menu || !ctxKbd.grid.length) { ctxKbd.open = false; ctxKbd.grid = []; return; }
+  let { r, c } = ctxKbd.pos;
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      r = Math.min(ctxKbd.grid.length - 1, r + 1);
+      setCtxPos(r, c);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      r = Math.max(0, r - 1);
+      setCtxPos(r, c);
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      setCtxPos(r, c + 1);   // clamps at the last column
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (c > 0) setCtxPos(r, c - 1);
+      else closeCtxKbd();    // leftmost + ← → close, return to the file
+      break;
+    case 'Enter':
+      e.preventDefault();
+      ctxActivate();
+      break;
+    case 'Escape':
+      e.preventDefault();
+      closeCtxKbd();
+      break;
+    default:
+      break;
+  }
+}
+
+function ctxActivate() {
+  const cell = ctxKbd.grid[ctxKbd.pos.r] && ctxKbd.grid[ctxKbd.pos.r][ctxKbd.pos.c];
+  if (!cell) return;
+  // Rename / New folder swap the menu for a text input that takes over typing;
+  // folder + Delete cells resolve immediately (and remove the row).
+  ctxKbd.open = false;
+  ctxKbd.grid = [];
+  ctxKbd.returnRow = null;
+  cell.click();
+}
+
+// When the focused file leaves the list (move OR delete), land the cursor on the
+// next file so the user can keep working straight down the list. We wrap
+// refreshFileRow (the single choke-point every move/delete funnels through).
+if (typeof refreshFileRow === 'function' && !refreshFileRow._kbdWrapped) {
+  const _origRefreshFileRow = refreshFileRow;
+  refreshFileRow = function (item, oldPath) {
+    let nextItem = null;
+    const removingFocused = kbdFocusRow && kbdFocusRow._item === item;
+    if (removingFocused) {
+      const rows = navRows();
+      const idx = rows.indexOf(kbdFocusRow);
+      for (let i = idx + 1; i < rows.length; i++) {
+        if (rows[i].classList.contains('file-item')) { nextItem = rows[i]._item; break; }
+      }
+      if (!nextItem) for (let i = idx - 1; i >= 0; i--) {
+        if (rows[i].classList.contains('file-item')) { nextItem = rows[i]._item; break; }
+      }
+    }
+    _origRefreshFileRow(item, oldPath);
+    if (removingFocused) {
+      kbdFocusRow = null;
+      if (nextItem) {
+        const r = document.getElementById('row_' + CSS.escape(nextItem.path || nextItem.name));
+        if (r) setKbdFocus(r);
+      }
+    }
+  };
+  refreshFileRow._kbdWrapped = true;
+}
+
+// Mouse clicks move the keyboard cursor too, so arrow keys continue from there
+// (the row's own click handler already does any preview).
+document.getElementById('fileList')?.addEventListener('click', e => {
+  const row = e.target.closest('.file-item, .zip-child');
+  if (row) setKbdFocus(row, false);
+});
+
+document.addEventListener('keydown', e => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // Don't hijack keys while a themed modal owns them.
+  if (document.getElementById('autoModalOverlay') || document.getElementById('autoConflictOverlay')) return;
+
+  if (ctxKbd.open) { handleCtxKey(e); return; }
+
+  switch (e.key) {
+    case 'ArrowDown':  e.preventDefault(); kbdMove(1);  break;
+    case 'ArrowUp':    e.preventDefault(); kbdMove(-1); break;
+    case 'PageDown':   e.preventDefault(); kbdPage(1);  break;
+    case 'PageUp':     e.preventDefault(); kbdPage(-1); break;
+    case 'ArrowRight': e.preventDefault(); kbdRight();  break;
+    case 'ArrowLeft':  e.preventDefault(); kbdLeft();   break;
+    case 'Delete':     e.preventDefault(); kbdDelete(); break;
+    default: break;
+  }
+});
