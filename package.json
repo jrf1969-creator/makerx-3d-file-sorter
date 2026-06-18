@@ -1,6 +1,6 @@
 {
   "name": "makerx-3d-viewer",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "MakerX Designs 3D File Viewer",
   "license": "UNLICENSED",
   "main": "main.js",

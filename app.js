@@ -603,19 +603,30 @@ document.getElementById('folderInput').addEventListener('change', async e => {
   sidebar.addEventListener('drop', async e => {
     e.preventDefault();
     sidebar.classList.remove('drag-over');
+    const isElectron = !!window.electronAPI?.openFolderDialog;
     const items = Array.from(e.dataTransfer.items);
+    const files = Array.from(e.dataTransfer.files);
+    let fileIdx = 0;
     for (const item of items) {
-      if (item.kind === 'file' && item.getAsFileSystemHandle) {
-        const handle = await item.getAsFileSystemHandle();
-        if (handle.kind === 'directory') { await loadFromDirectoryHandle(handle); return; }
+      if (item.kind !== 'file') continue;
+      const droppedFile = files[fileIdx++];
+      if (!item.getAsFileSystemHandle) continue;
+      const handle = await item.getAsFileSystemHandle();
+      if (handle.kind === 'directory') {
+        // In Electron, load by the real filesystem path so each file carries an
+        // electronPath and delete/move/rename run through IPC. The FSA handle's
+        // removeEntry() throws NotAllowedError in Electron's renderer.
+        if (isElectron && droppedFile?.path) await loadFromDirectoryPath(droppedFile.path);
+        else                                  await loadFromDirectoryHandle(handle);
+        return;
       }
     }
     // Fallback: dropped individual files
-    const files = Array.from(e.dataTransfer.files);
     if (files.length) {
       allFiles = files
         .filter(f => SUPPORTED.includes(f.name.split('.').pop().toLowerCase()))
-        .map(f => ({ name: f.name, ext: f.name.split('.').pop().toLowerCase(), size: f.size, file: f }));
+        .map(f => ({ name: f.name, ext: f.name.split('.').pop().toLowerCase(), size: f.size, file: f,
+                     electronPath: isElectron ? f.path : undefined }));
       renderFileList(); updateStats();
     }
   });
