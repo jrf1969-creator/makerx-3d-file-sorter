@@ -684,6 +684,23 @@
     font-family: 'Exo 2', sans-serif; font-style: italic;
   }
 
+  /* estimate-accuracy notice — same dark/green theme as the site Analyzer */
+  .est-notice {
+    padding: 8px 12px 10px;
+    margin-top: 2px;
+    border-top: 1px solid var(--line);
+  }
+  .est-notice p {
+    margin: 0 0 6px;
+    font-size: 9px; line-height: 1.55; color: var(--text3);
+    font-family: 'Exo 2', sans-serif; font-style: italic;
+  }
+  .est-notice p:last-child { margin-bottom: 0; }
+  .est-notice b {
+    color: var(--accent); font-style: normal; font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+
   /* ── CONTEXT MENU ── */
   .ctx-menu {
     position: fixed;
@@ -692,8 +709,9 @@
     border-radius: 6px;
     padding: 4px 0;
     min-width: 196px;
+    max-width: calc(100vw - 12px);
     max-height: calc(100vh - 20px);
-    overflow-y: auto;
+    overflow: auto;
     z-index: 2000;
     box-shadow: 0 8px 28px rgba(0,0,0,0.55);
     font-family: 'Rajdhani', sans-serif;

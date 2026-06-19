@@ -184,7 +184,9 @@ function setupMouse() {
       camTarget.addScaledVector(up, dy * panSpeed);
     } else {
       camTheta -= dx * 0.008;
-      camPhi = Math.max(0.05, Math.min(Math.PI - 0.05, camPhi + dy * 0.008));
+      // Drag down -> see the top (matches 3D Print Analyzer / three.js OrbitControls).
+      // camPhi is measured from the top, so dragging down must DECREASE it.
+      camPhi = Math.max(0.05, Math.min(Math.PI - 0.05, camPhi - dy * 0.008));
     }
     updateCameraPos();
   });
@@ -1967,8 +1969,11 @@ function showCtxMenu(e, item) {
   const W = window.innerWidth, H = window.innerHeight;
   let x = e.clientX, y = e.clientY;
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
-  if (x + mw > W - 6) x = W - mw - 6;
-  if (y + mh > H - 6) y = H - mh - 6;
+  // Keep the menu fully on-screen. Clamp to >=6 so a menu wider/taller than the
+  // (scaled) viewport never gets pushed off the top/left edge with its options
+  // unreachable — it scrolls instead (overflow:auto).
+  x = Math.max(6, Math.min(x, W - mw - 6));
+  y = Math.max(6, Math.min(y, H - mh - 6));
   menu.style.left = x + 'px';
   menu.style.top  = y + 'px';
 
@@ -2489,13 +2494,16 @@ async function bulkMovePrompt() {
   });
 
   // Position above the Move button (the multi-bar is at the bottom)
-  const W  = window.innerWidth;
+  const W  = window.innerWidth, H = window.innerHeight;
   const mw = menu.offsetWidth || 200;
   const mh = menu.offsetHeight || 120;
   let x = rect.left;
-  let y = rect.top - mh - 4;
-  if (x + mw > W - 6) x = W - mw - 6;
-  if (y < 6) y = rect.bottom + 4;
+  let y = rect.top - mh - 4;            // prefer above the button
+  if (y < 6) y = rect.bottom + 4;       // no room above -> drop below
+  // Final clamp so a tall folder list is always fully on-screen (it scrolls if
+  // it's taller than the viewport) instead of landing off the bottom edge.
+  x = Math.max(6, Math.min(x, W - mw - 6));
+  y = Math.max(6, Math.min(y, H - mh - 6));
   menu.style.left = x + 'px';
   menu.style.top  = y + 'px';
 

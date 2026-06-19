@@ -24,7 +24,7 @@
       <a href="https://makerxdesigns.com/links.html" target="_blank">Links</a>
     </div>
     <div class="mx-nav-right">
-      <span class="mx-version" id="appVersion" title="Installed version">v2.0.1</span>
+      <span class="mx-version" id="appVersion" title="Installed version">v2.0.3</span>
       <span class="mx-badge">Free Utility</span>
       <a class="mx-profile-btn" href="https://www.crealitycloud.com/user-profile/3092010586" target="_blank">
         <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -290,7 +290,19 @@
             </div>
           </div>
 
-          <p class="est-warn">Estimates assume a watertight mesh. Open or multi-shell geometry may give inaccurate volume.</p>
+          <!-- ── ESTIMATE ACCURACY NOTICE ── -->
+          <div class="est-notice">
+            <p><b>How this is estimated.</b> Weight, length and time are a fast geometric
+               approximation from the model's volume and surface area — not a real slice. Walls,
+               top/bottom skins and infill are modelled with simplified geometry; supports, brim,
+               skirt, ironing and non-standard infill patterns are not.</p>
+            <p><b>Why it may be off.</b> Accuracy is usually within about ±10–15% of slicer output,
+               but thin-walled, spiky or highly-detailed models (lots of surface area for their
+               volume) can read noticeably high. Print time assumes a steady average speed and
+               ignores acceleration and travel. For exact numbers, slice the file in your slicer.</p>
+            <p>Estimates also assume a watertight mesh — open or multi-shell geometry may give an
+               inaccurate volume.</p>
+          </div>
         </div>
       </div>
 
