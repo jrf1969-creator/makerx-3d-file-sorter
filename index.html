@@ -24,7 +24,7 @@
       <a href="https://makerxdesigns.com/links.html" target="_blank">Links</a>
     </div>
     <div class="mx-nav-right">
-      <span class="mx-version" id="appVersion" title="Installed version">v2.0.3</span>
+      <span class="mx-version" id="appVersion" title="Installed version">v2.1.0</span>
       <span class="mx-badge">Free Utility</span>
       <a class="mx-profile-btn" href="https://www.crealitycloud.com/user-profile/3092010586" target="_blank">
         <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -47,6 +47,10 @@
     <button class="tool-btn" id="updateBtn" onclick="checkForUpdates()" title="Check for updates">
       <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg>
       <span id="updateBtnLabel">Check for Updates</span>
+    </button>
+    <button class="tool-btn" id="settingsBtn" onclick="openSettings()" title="Settings">
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span id="sortBaseLabel" class="gear-label"></span>
     </button>
     <label class="auto-toggle" id="autoToggleWrap" title="AUTO sort: group every file into its category folder, then move each group with one click">
       <input type="checkbox" id="autoSortToggle">

@@ -88,7 +88,11 @@ const COLORS = [
 let currentColor = COLORS[0].hex;
 let rootDirHandle   = null;   // FSA root directory handle
 let rootDirPath     = null;   // actual file system path (Electron only)
-let knownSubfolders = [];     // [{ name, handle }] direct subfolders of root
+let knownSubfolders = [];     // [{ name, handle }] direct subfolders of the SORT DESTINATION
+// Optional "Sorted Items" folder (Electron-only, set in Settings). When non-null,
+// every Move / New folder / AUTO-sort routes into category folders inside THIS
+// folder instead of inside whatever folder was opened. null = sort into the open folder.
+let sortBasePath    = null;
 const selectedFiles = new Set();
 
 
@@ -301,7 +305,19 @@ async function loadFromDirectoryPath(dirPath) {
 
   const { files, dirs } = await window.electronAPI.scanFolder(dirPath);
 
-  knownSubfolders = dirs.map(d => ({ name: d.name, handle: null }));
+  // Move/New-folder destinations come from the "Sorted Items" folder when one is
+  // set (so its existing category folders appear in the menu), otherwise from the
+  // folder we just opened.
+  if (sortBasePath && sortBasePath !== dirPath) {
+    try {
+      const base = await window.electronAPI.scanFolder(sortBasePath);
+      knownSubfolders = base.dirs.map(d => ({ name: d.name, handle: null }));
+    } catch {
+      knownSubfolders = dirs.map(d => ({ name: d.name, handle: null }));
+    }
+  } else {
+    knownSubfolders = dirs.map(d => ({ name: d.name, handle: null }));
+  }
 
   for (const f of files) {
     allFiles.push({ name: f.name, ext: f.ext, size: f.size, date: f.mtime || 0,
@@ -2137,7 +2153,7 @@ function renderNewFolderCtxMenu(menu, item) {
     try {
       let newHandle;
       if (rootDirPath && window.electronAPI?.createDir) {
-        await window.electronAPI.createDir(rootDirPath + '\\' + folderName);
+        await window.electronAPI.createDir((sortBasePath || rootDirPath) + '\\' + folderName);
         newHandle = { name: folderName }; // placeholder — Electron uses paths, not handles
       } else {
         newHandle = await rootDirHandle.getDirectoryHandle(folderName, { create: true });
@@ -2246,7 +2262,8 @@ function focusNextAfterAnchor(index) {
 async function execMoveFile(item, targetHandle, targetFolderName) {
   try {
     if (item.electronPath) {
-      const destDir = targetFolderName ? rootDirPath + '\\' + targetFolderName : rootDirPath;
+      const baseDir = sortBasePath || rootDirPath;
+      const destDir = targetFolderName ? baseDir + '\\' + targetFolderName : baseDir;
       let onConflict;                       // undefined first try → throws on collision
       for (;;) {
         try {
@@ -2519,6 +2536,7 @@ buildColorPicker();
 initSort();
 checkLastFolder();
 showAppVersion();
+loadSettings();
 
 async function showAppVersion() {
   const el = document.getElementById('appVersion');
@@ -2527,6 +2545,147 @@ async function showAppVersion() {
     const v = await window.electronAPI.getVersion();
     if (v) el.textContent = 'v' + v;
   } catch { /* keep static fallback */ }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS — "Sorted Items" folder
+//  Lets the user pick ONE top-level folder to collect everything they sort. When
+//  set, every Move / New folder / AUTO-sort puts files into category folders
+//  inside THIS folder, regardless of which folder was opened — instead of
+//  scattering new category folders inside every folder they sort. Electron only
+//  (uses real paths); persisted in IndexedDB. null = sort into the opened folder.
+// ═══════════════════════════════════════════════════════════════════════════════
+async function loadSettings() {
+  try {
+    const sb = await idbGet('sortBasePath');
+    if (sb && typeof sb === 'string') sortBasePath = sb;
+  } catch { /* ignore */ }
+  applySortBaseUI();
+}
+
+// Reflect the active sort base on the gear button (highlight + folder-name label).
+function applySortBaseUI() {
+  const btn = document.getElementById('settingsBtn');
+  const lbl = document.getElementById('sortBaseLabel');
+  if (sortBasePath) {
+    const name = sortBasePath.split(/[/\\]/).pop();
+    if (btn) { btn.classList.add('active'); btn.title = 'Sorting into: ' + sortBasePath; }
+    if (lbl) lbl.textContent = name;
+  } else {
+    if (btn) { btn.classList.remove('active'); btn.title = 'Settings'; }
+    if (lbl) lbl.textContent = '';
+  }
+}
+
+// Re-scan the current sort destination for its subfolders (called after the sort
+// base changes, so the Move menu immediately reflects the new destination).
+async function refreshKnownSubfolders() {
+  if (!rootDirPath || !window.electronAPI?.scanFolder) return;
+  const base = sortBasePath || rootDirPath;
+  try {
+    const { dirs } = await window.electronAPI.scanFolder(base);
+    knownSubfolders = dirs.map(d => ({ name: d.name, handle: null }));
+  } catch { /* keep the existing list on a scan failure */ }
+}
+
+let _settingsKey = null;
+function closeSettings() {
+  if (_settingsKey) { document.removeEventListener('keydown', _settingsKey); _settingsKey = null; }
+  const o = document.getElementById('settingsOverlay');
+  if (o) o.remove();
+}
+
+function openSettings() {
+  closeSettings();
+  // The folder picker is an Electron capability; in the browser fallback the
+  // feature can't reach folders outside the picked handle, so guide accordingly.
+  const electron = !!window.electronAPI?.openFolderDialog;
+  const cur = sortBasePath;
+  const overlay = document.createElement('div');
+  overlay.className = 'auto-modal-overlay';
+  overlay.id = 'settingsOverlay';
+  overlay.innerHTML = `
+    <div class="auto-modal settings-modal" role="dialog" aria-modal="true">
+      <div class="settings-head">
+        <span class="settings-title">Settings</span>
+        <button class="settings-x" id="settingsClose" title="Close">&#x2715;</button>
+      </div>
+      <div class="settings-label">Sorted Items folder</div>
+      <p class="settings-desc">Choose one top-level folder to collect everything you sort. When set,
+        every <b>Move</b>, <b>New folder</b> and <b>AUTO&nbsp;sort</b> action puts files into category
+        folders inside <b>this</b> folder — no matter which folder you opened. Leave it unset to sort
+        into the folder you open.</p>
+      <div class="settings-path ${cur ? '' : 'unset'}" id="settingsPath">${cur ? escapeHtml(cur) : 'Not set — files sort into the folder you open.'}</div>
+      ${electron ? '' : '<p class="settings-desc" style="color:var(--text3)">A Sorted Items folder needs the desktop app — the browser version can only sort within the folder you grant access to.</p>'}
+      <div class="settings-btns">
+        <button class="auto-modal-btn auto-modal-yes" id="settingsChoose" ${electron ? '' : 'disabled'}>Choose folder…</button>
+        <button class="auto-modal-btn auto-modal-no" id="settingsClear" ${cur ? '' : 'disabled'}>Clear</button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-label">Review sorted files</div>
+      <p class="settings-desc">Check your already-sorted files and flag any that look like they belong in a
+        different category folder. You review each suggestion with a 3D preview and either <b>move</b> it or
+        mark it <b>correctly placed</b> — your decisions are remembered, so a later review never re-asks about
+        files you've already settled.</p>
+      <div class="settings-btns">
+        <button class="auto-modal-btn auto-modal-yes" id="settingsReview" ${electron ? '' : 'disabled'}>Review sorted files…</button>
+      </div>
+      <button class="settings-reset" id="settingsResetReview" disabled>Reset review history</button>
+      <p class="settings-hint">Reviews the Sorted Items folder above; if none is set, it reviews the folder you currently have open.</p>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
+  document.getElementById('settingsClose').onclick   = closeSettings;
+  document.getElementById('settingsChoose').onclick  = chooseSortBase;
+  document.getElementById('settingsClear').onclick   = clearSortBase;
+  document.getElementById('settingsReview').onclick  = () => { closeSettings(); startSortCheck(); };
+  document.getElementById('settingsResetReview').onclick = scResetHistory;
+  // Fill in the "(N remembered)" reset state once we've read the saved log.
+  if (typeof scResolvedCount === 'function') scRefreshResetBtn();
+  _settingsKey = e => { if (e.key === 'Escape') closeSettings(); };
+  document.addEventListener('keydown', _settingsKey);
+}
+
+// Update the "Reset review history (N remembered)" button to reflect the log size.
+async function scRefreshResetBtn() {
+  const btn = document.getElementById('settingsResetReview');
+  if (!btn) return;
+  const n = await scResolvedCount();
+  btn.textContent = n ? `Reset review history (${n} remembered)` : 'Reset review history';
+  btn.disabled = !n;
+}
+
+// Update just the path display + Clear-button state inside an open modal.
+function refreshSettingsModal() {
+  const p = document.getElementById('settingsPath');
+  if (p) {
+    if (sortBasePath) { p.textContent = sortBasePath; p.classList.remove('unset'); }
+    else { p.textContent = 'Not set — files sort into the folder you open.'; p.classList.add('unset'); }
+  }
+  const c = document.getElementById('settingsClear');
+  if (c) c.disabled = !sortBasePath;
+}
+
+async function chooseSortBase() {
+  if (!window.electronAPI?.openFolderDialog) return;
+  const dir = await window.electronAPI.openFolderDialog();
+  if (!dir) return;                       // user cancelled
+  sortBasePath = dir;
+  await idbPut('sortBasePath', dir);
+  await refreshKnownSubfolders();
+  applySortBaseUI();
+  refreshSettingsModal();
+}
+
+async function clearSortBase() {
+  sortBasePath = null;
+  await idbPut('sortBasePath', null);
+  await refreshKnownSubfolders();
+  applySortBaseUI();
+  refreshSettingsModal();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

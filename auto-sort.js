@@ -562,7 +562,9 @@ async function autoEnsureFolder(name) {
   if (f) return f;
   let handle = null;
   if (rootDirPath && window.electronAPI?.createDir) {
-    await window.electronAPI.createDir(rootDirPath + '\\' + name);
+    // Honour the optional "Sorted Items" folder (Settings) when one is set.
+    const baseDir = (typeof sortBasePath !== 'undefined' && sortBasePath) ? sortBasePath : rootDirPath;
+    await window.electronAPI.createDir(baseDir + '\\' + name);
     handle = { name };                                  // Electron uses paths
   } else if (rootDirHandle) {
     handle = await rootDirHandle.getDirectoryHandle(name, { create: true });
@@ -765,3 +767,580 @@ document.addEventListener('DOMContentLoaded', () => {
     else autoExitView();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SORT CHECK — "review my already-sorted files"
+//  Walks every file under the Sorted Items folder (or the open folder), runs the
+//  same offline classifier (autoClassify) on each name, and flags any file whose
+//  best-guess category differs from the folder it currently lives in. The user
+//  reviews each flag full-screen with the live 3D preview and either MOVES the
+//  file or marks it CORRECTLY PLACED. Every decision is logged (IndexedDB) so a
+//  later review never re-asks about a file the user already settled.
+//  Launched from Settings → "Review sorted files…". Globals reused from app.js:
+//    idbGet/idbPut, loadFile, clearViewer, onResize, escapeHtml,
+//    sortBasePath, rootDirPath, window.electronAPI, autoResolveMoveConflict.
+// ═══════════════════════════════════════════════════════════════════════════
+const SC_RESOLVED_KEY = 'mx_sortcheck_resolved';   // IndexedDB: { sig: {decision,from,to,date} }
+const SC_ICON = '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8L14 9"/></svg>';
+
+let scResolved = null;     // loaded decision log { sig: {...} }
+let scSuggestions = [];    // [{ name, ext, size, electronPath, parentDir, from, to, baseDir }] — only the OUTSTANDING ones
+let scIndex = 0;
+let scReviewedCount = 0;   // how many the user has settled this session (for the progress readout)
+let scCats = [];           // existing category folder names under the base (for the right-click "move to" menu)
+let scViewerHome = null;   // original parent of #viewerWrap (restored on close)
+let scKeyHandler = null;
+
+function scSig(name, size) { return (name || '').toLowerCase() + '|' + (size || 0); }
+// Fold a category/folder name so "Key Chains", "KEYCHAINS", "key-chains" all match.
+function scNormCat(s) { return (s || '').trim().toLowerCase().replace(/[\s_\-–—]+/g, ''); }
+
+/* ── Decision log ──────────────────────────────────────────────────────────── */
+async function scLoadResolved() {
+  if (scResolved) return scResolved;
+  try {
+    const v = await idbGet(SC_RESOLVED_KEY);
+    scResolved = (v && typeof v === 'object') ? v : {};
+  } catch { scResolved = {}; }
+  return scResolved;
+}
+async function scResolvedCount() { await scLoadResolved(); return Object.keys(scResolved).length; }
+async function scSaveResolved() { try { await idbPut(SC_RESOLVED_KEY, scResolved); } catch { /* ignore */ } }
+async function scResetHistory() {
+  await scLoadResolved();
+  const n = Object.keys(scResolved).length;
+  if (!n) return;
+  if (!confirm(`Forget your ${n} remembered review decision${n !== 1 ? 's' : ''}? The next review will check every sorted file again.`)) return;
+  scResolved = {};
+  await scSaveResolved();
+  if (typeof scRefreshResetBtn === 'function') scRefreshResetBtn();
+}
+
+/* ── Recursive walk of the sort base ───────────────────────────────────────────
+   Returns every supported file under baseDir, tagged with its TOP-LEVEL category
+   (the immediate subfolder it lives in; null for files loose in the base root),
+   plus the list of existing immediate subfolder names. */
+async function scWalk(baseDir, onProgress) {
+  const out = [], existingCats = [];
+  async function recurse(dir, topCat) {
+    let res;
+    try { res = await window.electronAPI.scanFolder(dir); } catch { return; }
+    for (const f of res.files) {
+      out.push({ name: f.name, ext: f.ext, size: f.size, electronPath: f.path, parentDir: dir, category: topCat });
+      if (onProgress && out.length % 25 === 0) onProgress(out.length);
+    }
+    for (const d of res.dirs) await recurse(d.path, topCat);
+  }
+  let root;
+  try { root = await window.electronAPI.scanFolder(baseDir); } catch { return { out, existingCats }; }
+  for (const f of root.files) out.push({ name: f.name, ext: f.ext, size: f.size, electronPath: f.path, parentDir: baseDir, category: null });
+  for (const d of root.dirs) { existingCats.push(d.name); await recurse(d.path, d.name); }
+  if (onProgress) onProgress(out.length);
+  return { out, existingCats };
+}
+
+/* ── Entry point (Settings → Review sorted files…) ─────────────────────────── */
+async function startSortCheck() {
+  if (!window.electronAPI?.scanFolder) { alert('Reviewing sorted files needs the desktop app.'); return; }
+  const base = (typeof sortBasePath !== 'undefined' && sortBasePath) ? sortBasePath : rootDirPath;
+  if (!base) { alert('Open a folder first, or set a Sorted Items folder in Settings, then run a review.'); return; }
+
+  autoLoadCategories();
+  autoLoadSuppressed();
+  await scLoadResolved();
+  if (typeof autoResetMovePolicy === 'function') autoResetMovePolicy();  // fresh conflict policy
+
+  scBuildScreen();
+  scShowScanning(0);
+
+  const { out, existingCats } = await scWalk(base, n => scShowScanning(n));
+
+  // Prefer moving into an EXISTING folder that matches the prediction (so we don't
+  // create a case-variant duplicate); otherwise use the classifier's canonical name.
+  scCats = existingCats.slice();
+  const catByNorm = new Map();
+  for (const c of existingCats) catByNorm.set(scNormCat(c), c);
+
+  scSuggestions = [];
+  for (const f of out) {
+    if (scResolved[scSig(f.name, f.size)]) continue;                          // already decided
+    const predicted = autoClassify(f.name);
+    if (predicted === AUTO_REVIEW) continue;                                  // classifier has no opinion
+    if (f.category && scNormCat(predicted) === scNormCat(f.category)) continue; // already in the right place
+    const toFolder = catByNorm.get(scNormCat(predicted)) || predicted;
+    if (f.category && scNormCat(toFolder) === scNormCat(f.category)) continue;  // same folder (different case) → fine
+    scSuggestions.push({
+      name: f.name, ext: f.ext, size: f.size, electronPath: f.electronPath,
+      parentDir: f.parentDir, from: f.category || '(loose files)', to: toFolder,
+      baseDir: base,
+    });
+  }
+  scIndex = 0;
+  scReviewedCount = 0;
+  scRenderScreen();
+}
+
+/* ── Screen scaffold ───────────────────────────────────────────────────────── */
+function scBuildScreen() {
+  if (document.getElementById('sortCheckScreen')) return;
+  const scr = document.createElement('div');
+  scr.id = 'sortCheckScreen';
+  scr.className = 'sc-screen';
+  scr.innerHTML = `
+    <div class="sc-banner">
+      <div class="sc-banner-icon">${SC_ICON}</div>
+      <div class="sc-banner-titles">
+        <span class="sc-banner-title">Sort Check</span>
+        <span class="sc-banner-sub">Reviewing your sorted files — this is not the main screen</span>
+      </div>
+      <div class="sc-banner-fill"></div>
+      <div class="sc-progress" id="scProgress"></div>
+      <button class="sc-return" id="scReturn">&#9666; Return to main screen</button>
+    </div>
+    <div class="sc-body" id="scBody"></div>`;
+  document.body.appendChild(scr);
+  document.getElementById('scReturn').onclick = closeSortCheck;
+  scKeyHandler = e => {
+    if (e.key === 'Escape') {
+      if (document.getElementById('scCtxMenu')) { scRemoveCtxMenu(); return; }  // close menu first
+      closeSortCheck();
+    }
+    else if (e.key === 'ArrowDown'  || e.key === 'ArrowRight') { e.preventDefault(); scNav(1); }
+    else if (e.key === 'ArrowUp'    || e.key === 'ArrowLeft')  { e.preventDefault(); scNav(-1); }
+  };
+  document.addEventListener('keydown', scKeyHandler);
+}
+
+function scShowScanning(n) {
+  const c = document.getElementById('scScanCount');
+  if (c) { c.textContent = `${n} files checked`; return; }
+  const body = document.getElementById('scBody');
+  if (body) body.innerHTML =
+    `<div class="sc-empty"><div class="spinner"></div>
+       <h3>Scanning your sorted files…</h3>
+       <p id="scScanCount">${n} files checked</p></div>`;
+}
+
+function scRenderScreen() {
+  const body = document.getElementById('scBody');
+  if (!body) return;
+  if (!scSuggestions.length) {
+    body.innerHTML =
+      `<div class="sc-empty">
+         <div class="sc-empty-icon">✅</div>
+         <h3>Everything looks correctly sorted</h3>
+         <p>We checked your sorted files and didn't find any that look like they belong in a different
+            category — or you've already reviewed the ones we'd flag. Tune the categories in AUTO sort
+            to catch more, or reset the review history in Settings to check everything again.</p>
+       </div>`;
+    scSetProgress();
+    return;
+  }
+  body.innerHTML = `
+    <div class="sc-list" id="scList"><div class="sc-list-head" id="scListHead"></div></div>
+    <div class="sc-preview" id="scPreview"><div class="sc-action" id="scAction"></div></div>`;
+  // Host the live viewer in the preview pane (above the action bar).
+  const wrap = document.getElementById('viewerWrap');
+  if (wrap) {
+    scViewerHome = wrap.parentNode;
+    document.getElementById('scPreview').insertBefore(wrap, document.getElementById('scAction'));
+    if (typeof onResize === 'function') onResize();
+  }
+  scRenderList();
+  scSelect(0);
+  scSetProgress();
+}
+
+/* ── List + preview + action bar ───────────────────────────────────────────── */
+function scRenderList() {
+  const list = document.getElementById('scList');
+  if (!list) return;
+  const head = document.getElementById('scListHead');
+  if (head) head.textContent = `${scSuggestions.length} suggestion${scSuggestions.length !== 1 ? 's' : ''}`;
+  [...list.querySelectorAll('.sc-row')].forEach(r => r.remove());
+  scSuggestions.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'sc-row' + (i === scIndex ? ' active' : '');
+    row.innerHTML = `
+      <div class="sc-row-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+      <div class="sc-row-move"><span class="sc-from">${escapeHtml(s.from)}</span><span class="sc-arrow">→</span><span class="sc-to">${escapeHtml(s.to)}</span></div>`;
+    row.onclick = () => scSelect(i);
+    row.oncontextmenu = ev => { scSelect(i); scShowCtxMenu(ev, scSuggestions[i]); };
+    list.appendChild(row);
+  });
+}
+
+function scSelect(i) {
+  if (i < 0 || i >= scSuggestions.length) return;
+  scIndex = i;
+  [...document.querySelectorAll('.sc-row')].forEach((r, idx) => r.classList.toggle('active', idx === i));
+  const active = document.querySelector('.sc-row.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+  const s = scSuggestions[i];
+  scClearZipPanel();
+  if (s.ext === 'zip') {
+    scShowZip(s);                                   // peek inside + list the models
+  } else if (typeof loadFile === 'function') {
+    loadFile({ name: s.name, ext: s.ext, size: s.size, electronPath: s.electronPath });
+  }
+  scRenderAction();
+}
+
+const SC_PREVIEWABLE = ['stl', '3mf', 'gcode', 'step', 'stp'];
+
+// A zip suggestion: peek its contents, show a clickable list over the preview,
+// and auto-load the first previewable model so the user can see what's inside.
+async function scShowZip(s) {
+  if (typeof showLoading === 'function') showLoading('Opening ' + s.name + '…');
+  let contents = [];
+  try {
+    const res = await window.electronAPI.peekZip(s.electronPath);
+    contents = (res && res.contents) || [];
+  } catch (err) {
+    if (typeof hideLoading === 'function') hideLoading();
+    scRenderZipPanel(s, [], 'Could not read this ZIP.');
+    return;
+  }
+  if (scSuggestions[scIndex] !== s) return;          // user navigated away while peeking
+  scRenderZipPanel(s, contents, '');
+  const first = contents.find(c => SC_PREVIEWABLE.includes(c.ext));
+  if (first) scLoadZipChild(s, first);
+  else if (typeof clearViewer === 'function') clearViewer();   // nothing 3D to show
+}
+
+function scLoadZipChild(s, c) {
+  scMarkZipActive(c.path);
+  if (typeof loadZipChild === 'function') {
+    loadZipChild({ path: c.path, ext: c.ext, size: c.size, electronZipPath: s.electronPath, zipEntry: null },
+                 { name: s.name });
+  }
+}
+
+function scClearZipPanel() {
+  const p = document.getElementById('scZipPanel');
+  if (p) p.remove();
+}
+
+function scMarkZipActive(path) {
+  document.querySelectorAll('#scZipPanel .sc-zip-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.path === path));
+}
+
+function scRenderZipPanel(s, contents, note) {
+  scClearZipPanel();
+  const pre = document.getElementById('scPreview');
+  if (!pre) return;
+  const models = contents.filter(c => SC_PREVIEWABLE.includes(c.ext));
+  const panel = document.createElement('div');
+  panel.id = 'scZipPanel';
+  panel.className = 'sc-zip-panel';
+  const head = `Inside this ZIP — ${contents.length} file${contents.length !== 1 ? 's' : ''}` +
+               (models.length ? `, ${models.length} previewable` : '');
+  const rows = contents.length ? contents.map(c => {
+    const name = c.path.split('/').pop();
+    const can  = SC_PREVIEWABLE.includes(c.ext);
+    return `<div class="sc-zip-item${can ? '' : ' disabled'}" data-path="${escapeHtml(c.path)}" data-ext="${escapeHtml(c.ext)}">
+              <span class="sc-zip-ext">${escapeHtml(c.ext.toUpperCase())}</span>
+              <span class="sc-zip-name" title="${escapeHtml(c.path)}">${escapeHtml(name)}</span>
+            </div>`;
+  }).join('') : `<div class="sc-zip-empty">${escapeHtml(note || 'No files found in this ZIP.')}</div>`;
+  panel.innerHTML = `<div class="sc-zip-head">${escapeHtml(head)}</div>${rows}`;
+  pre.appendChild(panel);
+  panel.querySelectorAll('.sc-zip-item:not(.disabled)').forEach(el => {
+    el.onclick = () => {
+      const c = contents.find(x => x.path === el.dataset.path);
+      if (c) scLoadZipChild(s, c);
+    };
+  });
+}
+
+function scRenderAction() {
+  const bar = document.getElementById('scAction');
+  if (!bar) return;
+  const s = scSuggestions[scIndex];
+  bar.innerHTML = `
+    <div class="sc-action-info">
+      <span class="sc-action-file" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+      <span class="sc-action-move"><span class="sc-from">${escapeHtml(s.from)}</span><span class="sc-arrow">→</span><span class="sc-to">${escapeHtml(s.to)}</span></span>
+    </div>
+    <div class="sc-action-fill"></div>
+    <button class="sc-nav" id="scPrev" ${scIndex <= 0 ? 'disabled' : ''} title="Previous (↑)">‹</button>
+    <button class="sc-nav" id="scNext" ${scIndex >= scSuggestions.length - 1 ? 'disabled' : ''} title="Next (↓)">›</button>
+    <button class="sc-btn sc-btn-keep" id="scKeep">Correct — keep here</button>
+    <button class="sc-btn sc-btn-move" id="scMove">Move to ${escapeHtml(s.to)}</button>`;
+  document.getElementById('scPrev').onclick = () => scNav(-1);
+  document.getElementById('scNext').onclick = () => scNav(1);
+  document.getElementById('scKeep').onclick = () => scResolve('kept');
+  document.getElementById('scMove').onclick = () => scResolve('moved');
+}
+
+function scNav(dir) {
+  const ni = scIndex + dir;
+  if (ni < 0 || ni >= scSuggestions.length) return;
+  scSelect(ni);
+}
+
+/* ── Decide one suggestion (Move or Keep) — then drop it off the list ────────── */
+async function scResolve(decision) {
+  const s = scSuggestions[scIndex];
+  if (!s) return;
+  if (decision === 'moved') {
+    const ok = await scMoveTo(s, s.to);
+    if (!ok) return;                        // move failed / skipped — leave it for retry
+  }
+  await scRemoveResolved(s, decision, s.to);
+}
+
+// Log a settled decision (keyed by name|size, so a later review never re-asks)
+// and drop the file from the list.
+async function scRemoveResolved(s, decision, toFolder) {
+  scResolved[scSig(s.name, s.size)] = { decision, from: s.from, to: toFolder, date: Date.now() };
+  await scSaveResolved();
+  if (typeof scRefreshResetBtn === 'function') scRefreshResetBtn();
+  scDropItem(s);
+}
+
+// Remove one suggestion from the list and slide focus to the next; show the
+// completion screen when the list empties.
+function scDropItem(s) {
+  const idx = scSuggestions.indexOf(s);
+  if (idx === -1) return;
+  scSuggestions.splice(idx, 1);
+  scReviewedCount++;
+  if (!scSuggestions.length) { scShowDone(scReviewedCount); return; }
+  scIndex = Math.min(idx, scSuggestions.length - 1);
+  scClearZipPanel();
+  scRenderList();
+  scSelect(scIndex);
+  scSetProgress();
+}
+
+// Finished — all suggestions handled. Hand the live viewer back to the main
+// layout (so replacing the body doesn't tear out the canvas) and show a summary.
+function scShowDone(n) {
+  const wrap = document.getElementById('viewerWrap');
+  if (wrap && scViewerHome) {
+    scViewerHome.appendChild(wrap);
+    scViewerHome = null;
+    if (typeof onResize === 'function') onResize();
+  }
+  const body = document.getElementById('scBody');
+  if (body) body.innerHTML = `
+    <div class="sc-empty">
+      <div class="sc-empty-icon">🎉</div>
+      <h3>Review complete</h3>
+      <p>You reviewed ${n} file${n !== 1 ? 's' : ''}. Your decisions are saved, so a future review
+         won't ask about them again.</p>
+      <button class="sc-return" id="scDoneReturn">&#9666; Return to main screen</button>
+    </div>`;
+  const b = document.getElementById('scDoneReturn');
+  if (b) b.onclick = closeSortCheck;
+  scSetProgress();
+}
+
+// Move a suggestion's file into <baseDir>\<folderName>, creating the folder if
+// needed and reusing the themed conflict prompt. Returns true on success.
+async function scMoveTo(s, folderName) {
+  try {
+    const destDir = s.baseDir + '\\' + folderName;
+    await window.electronAPI.createDir(destDir);
+    let onConflict;
+    for (;;) {
+      try {
+        const finalName = await window.electronAPI.moveFile(s.electronPath, destDir + '\\' + s.name, onConflict);
+        // Track the new location so re-selecting the row still previews correctly.
+        s.name = (finalName && typeof finalName === 'string') ? finalName : s.name;
+        s.electronPath = destDir + '\\' + s.name;
+        return true;
+      } catch (err) {
+        if (/already exists/i.test(err.message || '') && typeof autoResolveMoveConflict === 'function') {
+          const res = await autoResolveMoveConflict(s.name);
+          if (res.strategy === 'skip') return false;
+          onConflict = res.strategy;                 // 'rename' | 'overwrite' → retry
+          continue;
+        }
+        throw err;
+      }
+    }
+  } catch (err) {
+    alert('Move failed: ' + (err && err.message || err));
+    return false;
+  }
+}
+
+function scCatFolderFor(predicted) {
+  for (const c of scCats) if (scNormCat(c) === scNormCat(predicted)) return c;
+  return predicted;
+}
+
+/* ── Right-click menu on a Sort Check row (move elsewhere / rename / delete) ─── */
+function scRemoveCtxMenu() { const m = document.getElementById('scCtxMenu'); if (m) m.remove(); }
+
+function scShowCtxMenu(e, s) {
+  e.preventDefault();
+  e.stopPropagation();
+  scRemoveCtxMenu();
+  const menu = document.createElement('div');
+  menu.id = 'scCtxMenu';
+  menu.className = 'ctx-menu';
+  document.body.appendChild(menu);
+  scRenderCtxMenu(menu, s);
+
+  const W = window.innerWidth, H = window.innerHeight;
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.max(6, Math.min(e.clientX, W - mw - 6)) + 'px';
+  menu.style.top  = Math.max(6, Math.min(e.clientY, H - mh - 6)) + 'px';
+
+  setTimeout(() => {
+    document.addEventListener('click',       scRemoveCtxMenu, { once: true });
+    document.addEventListener('contextmenu', scRemoveCtxMenu, { once: true });
+  }, 0);
+}
+
+function scRenderCtxMenu(menu, s) {
+  // "Move to folder": existing category folders, minus the file's own folder.
+  const fromNorm = scNormCat(s.from === '(loose files)' ? '' : s.from);
+  const folders  = scCats.filter(c => scNormCat(c) !== fromNorm).sort((a, b) => a.localeCompare(b));
+  const cols = Math.max(1, Math.ceil(folders.length / 10));
+  const rows = Math.min(folders.length, 10);
+  // Row-major emit order so the CSS grid reads alphabetically down each column.
+  const ordered = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const idx = c * rows + r; ordered.push(idx < folders.length ? folders[idx] : null);
+  }
+  const gridHtml = folders.length ? `
+    <div class="ctx-label" style="padding-top:7px">Move to folder</div>
+    <div class="ctx-folder-grid cols-${cols}" style="--ctx-cols:${cols}">
+      ${ordered.map(f => f
+        ? `<div class="ctx-item ctx-fld" data-folder="${escapeHtml(f)}">${SVG_FOLDER} ${escapeHtml(f)}</div>`
+        : `<div class="ctx-item" style="visibility:hidden;pointer-events:none"></div>`).join('')}
+    </div>` : '';
+
+  menu.innerHTML = `
+    <div class="ctx-item" id="scCtxRename">${SVG_RENAME} Rename</div>
+    ${gridHtml}
+    <div class="ctx-item" id="scCtxNewFolder">${SVG_NEWFOLDER} New folder…</div>
+    <div class="ctx-divider"></div>
+    <div class="ctx-item ctx-delete" id="scCtxDelete" style="color:#c05050">${SVG_TRASH} Delete file</div>`;
+
+  menu.querySelectorAll('.ctx-fld').forEach(el => {
+    el.onclick = async ev => {
+      ev.stopPropagation();
+      scRemoveCtxMenu();
+      const folder = el.dataset.folder;
+      const ok = await scMoveTo(s, folder);
+      if (ok) await scRemoveResolved(s, 'moved', folder);
+    };
+  });
+  menu.querySelector('#scCtxRename').onclick    = ev => { ev.stopPropagation(); scRenderCtxRename(menu, s); };
+  menu.querySelector('#scCtxNewFolder').onclick = ev => { ev.stopPropagation(); scRenderCtxNewFolder(menu, s); };
+  menu.querySelector('#scCtxDelete').onclick    = ev => { ev.stopPropagation(); scRemoveCtxMenu(); scDeleteItem(s); };
+}
+
+function scRenderCtxRename(menu, s) {
+  const dot = s.name.lastIndexOf('.');
+  const selEnd = dot > 0 ? dot : s.name.length;
+  menu.innerHTML = `
+    <div class="ctx-label">Rename</div>
+    <div class="ctx-input-wrap">
+      <input class="ctx-input" id="scCtxNameInput" value="${escapeHtml(s.name)}" spellcheck="false">
+      <button class="ctx-ok" id="scCtxNameOk" title="Confirm">✓</button>
+      <button class="ctx-cancel" id="scCtxNameCancel" title="Cancel">✕</button>
+    </div>`;
+  const inp = menu.querySelector('#scCtxNameInput');
+  inp.focus(); inp.setSelectionRange(0, selEnd);
+  const go = () => { const v = inp.value.trim(); scRemoveCtxMenu(); if (v && v !== s.name) scRenameItem(s, v); };
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter')  { ev.stopPropagation(); go(); }
+    if (ev.key === 'Escape') { ev.stopPropagation(); scRemoveCtxMenu(); }
+  });
+  inp.addEventListener('click', ev => ev.stopPropagation());
+  menu.querySelector('#scCtxNameOk').onclick     = ev => { ev.stopPropagation(); go(); };
+  menu.querySelector('#scCtxNameCancel').onclick = ev => { ev.stopPropagation(); scRemoveCtxMenu(); };
+}
+
+function scRenderCtxNewFolder(menu, s) {
+  menu.innerHTML = `
+    <div class="ctx-label">New folder name</div>
+    <div class="ctx-input-wrap">
+      <input class="ctx-input" id="scCtxFolderInput" placeholder="folder-name" spellcheck="false">
+      <button class="ctx-ok" id="scCtxFolderOk" title="Create & move">✓</button>
+      <button class="ctx-cancel" id="scCtxFolderCancel" title="Cancel">✕</button>
+    </div>`;
+  const inp = menu.querySelector('#scCtxFolderInput');
+  inp.focus();
+  const go = async () => {
+    const folder = inp.value.trim();
+    scRemoveCtxMenu();
+    if (!folder) return;
+    if (!scCats.some(c => scNormCat(c) === scNormCat(folder))) scCats.push(folder);
+    const ok = await scMoveTo(s, folder);
+    if (ok) await scRemoveResolved(s, 'moved', folder);
+  };
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter')  { ev.stopPropagation(); go(); }
+    if (ev.key === 'Escape') { ev.stopPropagation(); scRemoveCtxMenu(); }
+  });
+  inp.addEventListener('click', ev => ev.stopPropagation());
+  menu.querySelector('#scCtxFolderOk').onclick     = ev => { ev.stopPropagation(); go(); };
+  menu.querySelector('#scCtxFolderCancel').onclick = ev => { ev.stopPropagation(); scRemoveCtxMenu(); };
+}
+
+async function scDeleteItem(s) {
+  if (!confirm(`Delete "${s.name}"? This cannot be undone.`)) return;
+  try {
+    await window.electronAPI.deleteFile(s.electronPath);
+  } catch (err) {
+    alert('Delete failed: ' + (err && err.message || err));
+    return;
+  }
+  scDropItem(s);   // gone for good — no decision to remember
+}
+
+async function scRenameItem(s, newName) {
+  newName = (newName || '').trim();
+  if (!newName || newName === s.name) return;
+  const newPath = s.electronPath.replace(/[^/\\]+$/, '') + newName;
+  try {
+    await window.electronAPI.renameFile(s.electronPath, newPath);
+  } catch (err) {
+    alert('Rename failed: ' + (err && err.message || err));
+    return;
+  }
+  s.name = newName;
+  s.ext  = newName.split('.').pop().toLowerCase();
+  s.electronPath = newPath;
+  // Re-classify under the new name; if it now matches its folder it's no longer a flag.
+  const predicted = autoClassify(newName);
+  const fromCat = s.from === '(loose files)' ? null : s.from;
+  if (predicted === AUTO_REVIEW || (fromCat && scNormCat(predicted) === scNormCat(fromCat))) {
+    scDropItem(s);
+    return;
+  }
+  s.to = scCatFolderFor(predicted);
+  scRenderList();
+  scSelect(scIndex);
+}
+
+function scSetProgress() {
+  const el = document.getElementById('scProgress');
+  if (!el) return;
+  const remaining = scSuggestions.length;
+  if (!scReviewedCount && !remaining) { el.innerHTML = ''; return; }
+  el.innerHTML = `<b>${scReviewedCount}</b> reviewed · ${remaining} left`;
+}
+
+/* ── Exit → restore the main screen ────────────────────────────────────────── */
+function closeSortCheck() {
+  scRemoveCtxMenu();
+  const wrap = document.getElementById('viewerWrap');
+  if (wrap && scViewerHome) {
+    scViewerHome.appendChild(wrap);             // .main only holds [viewerBar, wrap] → order restored
+    if (typeof onResize === 'function') onResize();
+  }
+  scViewerHome = null;
+  if (scKeyHandler) { document.removeEventListener('keydown', scKeyHandler); scKeyHandler = null; }
+  const scr = document.getElementById('sortCheckScreen');
+  if (scr) scr.remove();
+  if (typeof clearViewer === 'function') clearViewer();   // reset preview to "no file"
+}
