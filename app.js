@@ -267,7 +267,7 @@ function tweenToView(view, duration, onDone) {
 }
 
 // ── FOLDER OPEN ────────────────────────────────────────────────────────────────
-const SUPPORTED = ['stl','3mf','zip','gcode','step','stp'];
+const SUPPORTED = ['stl','3mf','obj','ply','zip','gcode','step','stp'];
 
 async function openFolder() {
   // Electron: use native dialog — gives real file system path directly
@@ -369,14 +369,14 @@ function injectZipChildren(item) {
   children.id = 'zip_' + item.name;
 
   for (const child of item.zipContents) {
-    const isPreviewable = ['stl','3mf','gcode','step','stp'].includes(child.ext);
+    const isPreviewable = ['stl','3mf','obj','ply','gcode','step','stp'].includes(child.ext);
     const cRow = document.createElement('div');
     cRow.className = 'zip-child';
     // Back-references for keyboard navigation (internal zip files can't be moved/deleted)
     cRow._child = child;
     cRow._zipItem = item;
     cRow._previewable = isPreviewable;
-    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'gcode' ? 'icon-gcode' : ['step','stp'].includes(child.ext) ? 'icon-step' : 'icon-other';
+    const cIconClass = child.ext === 'stl' ? 'icon-stl' : child.ext === '3mf' ? 'icon-3mf' : child.ext === 'obj' ? 'icon-obj' : child.ext === 'ply' ? 'icon-ply' : child.ext === 'gcode' ? 'icon-gcode' : ['step','stp'].includes(child.ext) ? 'icon-step' : 'icon-other';
     const cName = child.path.split('/').pop();
     const cDir  = child.path.includes('/') ? child.path.split('/').slice(0,-1).join('/') + ' · ' : '';
     cRow.innerHTML = `
@@ -475,7 +475,7 @@ async function loadFromDirectoryHandle(dirHandle) {
 
       // Find the minimum folder depth among 3D files so we handle zips that
       // wrap everything in a single top-level folder (e.g. ModelName/file.stl)
-      const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp']);
+      const MODEL_EXTS = new Set(['stl','3mf','obj','ply','step','stp']);
       const depths = allEntries
         .filter(([p]) => MODEL_EXTS.has(p.split('.').pop().toLowerCase()))
         .map(([p]) => (p.match(/\//g) || []).length);
@@ -593,7 +593,7 @@ document.getElementById('folderInput').addEventListener('change', async e => {
         const buf = await item.file.arrayBuffer();
         const zip = await JSZip.loadAsync(buf);
         const allEntries = Object.entries(zip.files).filter(([, e]) => !e.dir);
-        const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp']);
+        const MODEL_EXTS = new Set(['stl','3mf','obj','ply','step','stp']);
         const depths = allEntries
           .filter(([p]) => MODEL_EXTS.has(p.split('.').pop().toLowerCase()))
           .map(([p]) => (p.match(/\//g) || []).length);
@@ -671,7 +671,7 @@ function hideScanBar() {
 // ── FILE LIST RENDER ───────────────────────────────────────────────────────────
 function renderFileList() {
   const list      = document.getElementById('fileList');
-  const supported = allFiles.filter(f => ['stl','3mf','zip','gcode'].includes(f.ext));
+  const supported = allFiles.filter(f => SUPPORTED.includes(f.ext));
   list.innerHTML  = '';
   if (!supported.length) {
     list.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><p>No supported files found.</p></div>';
@@ -753,6 +753,12 @@ async function loadFile(item) {
       displayGeometry(geo, item.name);
     } else if (item.ext === '3mf') {
       await parse3MF(buf, item.name);
+    } else if (item.ext === 'obj') {
+      const geo = parseOBJ(new TextDecoder().decode(buf));
+      displayGeometry(geo, item.name);
+    } else if (item.ext === 'ply') {
+      const geo = parsePLY(buf);
+      displayGeometry(geo, item.name);
     } else if (item.ext === 'gcode') {
       displayToolpath(parseGcode(new TextDecoder().decode(buf)), item.name);
     } else if (item.ext === 'step' || item.ext === 'stp') {
@@ -786,6 +792,12 @@ async function loadZipChild(child, zipItem) {
       displayGeometry(geo, displayName + ' (from ' + zipItem.name + ')');
     } else if (child.ext === '3mf') {
       await parse3MFBuffer(buf, displayName + ' (from ' + zipItem.name + ')');
+    } else if (child.ext === 'obj') {
+      const geo = parseOBJ(new TextDecoder().decode(buf));
+      displayGeometry(geo, displayName + ' (from ' + zipItem.name + ')');
+    } else if (child.ext === 'ply') {
+      const geo = parsePLY(buf);
+      displayGeometry(geo, displayName + ' (from ' + zipItem.name + ')');
     } else if (child.ext === 'gcode') {
       displayToolpath(parseGcode(new TextDecoder().decode(buf)), displayName + ' (from ' + zipItem.name + ')');
     } else if (child.ext === 'step' || child.ext === 'stp') {
@@ -851,6 +863,161 @@ function parseSTL(buffer) {
   for (let i = 0; i < normals.length; i += 3) { if (normals[i] === 0 && normals[i+1] === 0 && normals[i+2] === 0) { degenerateNormals = true; break; } }
   if (degenerateNormals) { geo.computeVertexNormals(); }
   else { geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3)); }
+  geo.computeBoundingBox();
+  return geo;
+}
+
+// ── OBJ PARSER ───────────────────────────────────────────────────────────────────
+// Plain-text Wavefront OBJ. Reads v (vertices) and f (faces); face polygons are
+// fan-triangulated and negative (relative) indices are resolved. UV/normal refs
+// in "v/vt/vn" tokens are ignored — normals are recomputed for clean flat shading.
+function parseOBJ(text) {
+  const vx = [], vy = [], vz = [];
+  const positions = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line[0] === '#') continue;
+    if (line[0] === 'v' && (line[1] === ' ' || line[1] === '\t')) {
+      const p = line.split(/\s+/);
+      vx.push(+p[1]); vy.push(+p[2]); vz.push(+p[3]);
+    } else if (line[0] === 'f' && (line[1] === ' ' || line[1] === '\t')) {
+      const p = line.split(/\s+/).slice(1);
+      const idx = p.map(tok => {
+        let i = parseInt(tok.split('/')[0], 10);
+        if (i < 0) i = vx.length + i; else i -= 1;   // OBJ is 1-based; negatives are relative
+        return i;
+      });
+      // Fan-triangulate the polygon (handles tris, quads, n-gons)
+      for (let t = 1; t < idx.length - 1; t++) {
+        for (const k of [idx[0], idx[t], idx[t + 1]]) {
+          if (k < 0 || k >= vx.length) continue;
+          positions.push(vx[k], vy[k], vz[k]);
+        }
+      }
+    }
+  }
+  if (!positions.length) throw new Error('OBJ file contained no renderable geometry.');
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  return geo;
+}
+
+// ── PLY PARSER ───────────────────────────────────────────────────────────────────
+// Stanford PLY, ASCII and binary (little/big endian). Reads the vertex x/y/z and
+// face vertex-index lists; faces are fan-triangulated. Extra vertex properties
+// (normals, colours, confidence…) are skipped by walking each property's type.
+function parsePLY(buffer) {
+  const bytes = new Uint8Array(buffer);
+  // The header is always ASCII, terminated by "end_header\n".
+  let headerEnd = -1;
+  const marker = 'end_header';
+  for (let i = 0; i < bytes.length - marker.length; i++) {
+    let ok = true;
+    for (let j = 0; j < marker.length; j++) { if (bytes[i + j] !== marker.charCodeAt(j)) { ok = false; break; } }
+    if (ok) { headerEnd = i + marker.length; break; }
+  }
+  if (headerEnd < 0) throw new Error('Not a valid PLY file (no header).');
+  // Advance past the newline(s) after end_header
+  let dataStart = headerEnd;
+  while (dataStart < bytes.length && (bytes[dataStart] === 0x0d || bytes[dataStart] === 0x0a)) dataStart++;
+
+  const headerText = new TextDecoder().decode(bytes.subarray(0, headerEnd));
+  const lines = headerText.split('\n').map(l => l.trim()).filter(Boolean);
+
+  let format = 'ascii';
+  const elements = [];   // { name, count, props:[{name,type,isList,countType,valType}] }
+  let cur = null;
+  for (const line of lines) {
+    const p = line.split(/\s+/);
+    if (p[0] === 'format') {
+      format = p[1];
+    } else if (p[0] === 'element') {
+      cur = { name: p[1], count: +p[2], props: [] };
+      elements.push(cur);
+    } else if (p[0] === 'property' && cur) {
+      if (p[1] === 'list') cur.props.push({ name: p[4], isList: true, countType: p[2], valType: p[3] });
+      else cur.props.push({ name: p[2], isList: false, type: p[1] });
+    }
+  }
+
+  const TYPE_SIZE = { char:1, uchar:1, int8:1, uint8:1, short:2, ushort:2, int16:2, uint16:2,
+                      int:4, uint:4, int32:4, uint32:4, float:4, float32:4, double:8, float64:8 };
+
+  const verts = [];      // flat x,y,z
+  const positions = [];  // triangle soup
+
+  if (format === 'ascii') {
+    const tokens = new TextDecoder().decode(bytes.subarray(dataStart)).split(/\s+/).filter(t => t !== '');
+    let ti = 0;
+    for (const el of elements) {
+      for (let n = 0; n < el.count; n++) {
+        if (el.name === 'vertex') {
+          let x = 0, y = 0, z = 0;
+          for (const pr of el.props) {
+            const v = parseFloat(tokens[ti++]);
+            if (pr.name === 'x') x = v; else if (pr.name === 'y') y = v; else if (pr.name === 'z') z = v;
+          }
+          verts.push(x, y, z);
+        } else if (el.name === 'face') {
+          // Expect a single list property of vertex indices
+          const cnt = parseInt(tokens[ti++], 10);
+          const idx = [];
+          for (let k = 0; k < cnt; k++) idx.push(parseInt(tokens[ti++], 10));
+          for (let t = 1; t < idx.length - 1; t++) {
+            for (const a of [idx[0], idx[t], idx[t + 1]]) positions.push(verts[a*3], verts[a*3+1], verts[a*3+2]);
+          }
+        } else {
+          for (const pr of el.props) { if (pr.isList) { const c = parseInt(tokens[ti++],10); ti += c; } else ti++; }
+        }
+      }
+    }
+  } else {
+    const le = format === 'binary_little_endian';
+    const dv = new DataView(buffer);
+    let off = dataStart;
+    const readVal = type => {
+      const s = TYPE_SIZE[type] || 4; let val;
+      switch (type) {
+        case 'char': case 'int8':   val = dv.getInt8(off); break;
+        case 'uchar': case 'uint8': val = dv.getUint8(off); break;
+        case 'short': case 'int16': val = dv.getInt16(off, le); break;
+        case 'ushort': case 'uint16': val = dv.getUint16(off, le); break;
+        case 'int': case 'int32':   val = dv.getInt32(off, le); break;
+        case 'uint': case 'uint32': val = dv.getUint32(off, le); break;
+        case 'double': case 'float64': val = dv.getFloat64(off, le); break;
+        default: val = dv.getFloat32(off, le); break;   // float / float32
+      }
+      off += s; return val;
+    };
+    for (const el of elements) {
+      for (let n = 0; n < el.count; n++) {
+        if (el.name === 'vertex') {
+          let x = 0, y = 0, z = 0;
+          for (const pr of el.props) {
+            const v = readVal(pr.type);
+            if (pr.name === 'x') x = v; else if (pr.name === 'y') y = v; else if (pr.name === 'z') z = v;
+          }
+          verts.push(x, y, z);
+        } else if (el.name === 'face') {
+          const cnt = readVal(el.props[0].countType);
+          const idx = [];
+          for (let k = 0; k < cnt; k++) idx.push(readVal(el.props[0].valType));
+          for (let t = 1; t < idx.length - 1; t++) {
+            for (const a of [idx[0], idx[t], idx[t + 1]]) positions.push(verts[a*3], verts[a*3+1], verts[a*3+2]);
+          }
+        } else {
+          for (const pr of el.props) { if (pr.isList) { const c = readVal(pr.countType); for (let k=0;k<c;k++) readVal(pr.valType); } else readVal(pr.type); }
+        }
+      }
+    }
+  }
+
+  if (!positions.length) throw new Error('PLY file contained no renderable faces.');
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.computeVertexNormals();
   geo.computeBoundingBox();
   return geo;
 }
@@ -1825,6 +1992,8 @@ function buildFileRow(item) {
   row._item = item;   // back-reference for keyboard navigation
   const iconClass = item.ext === 'stl'   ? 'icon-stl'
                   : item.ext === '3mf'   ? 'icon-3mf'
+                  : item.ext === 'obj'   ? 'icon-obj'
+                  : item.ext === 'ply'   ? 'icon-ply'
                   : item.ext === 'gcode' ? 'icon-gcode'
                   : ['stp','step'].includes(item.ext) ? 'icon-step'
                   : 'icon-zip';
@@ -2634,6 +2803,16 @@ function openSettings() {
       </div>
       <button class="settings-reset" id="settingsResetReview" disabled>Reset review history</button>
       <p class="settings-hint">Reviews the Sorted Items folder above; if none is set, it reviews the folder you currently have open.</p>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-label">Help &amp; guide</div>
+      <p class="settings-desc">New here? The full user guide walks through every feature — opening folders, the
+        3D preview, print estimates, manual sorting, AUTO&nbsp;sort, the Sorted Items folder and Sort&nbsp;Check.</p>
+      <div class="settings-btns">
+        <button class="auto-modal-btn auto-modal-yes" id="settingsGuide">&#x1F4C4; Open User Guide (PDF)…</button>
+      </div>
+      <p class="settings-hint">Opens the guide on makerxdesigns.com in your browser.</p>
     </div>`;
   document.body.appendChild(overlay);
 
@@ -2643,6 +2822,11 @@ function openSettings() {
   document.getElementById('settingsClear').onclick   = clearSortBase;
   document.getElementById('settingsReview').onclick  = () => { closeSettings(); startSortCheck(); };
   document.getElementById('settingsResetReview').onclick = scResetHistory;
+  document.getElementById('settingsGuide').onclick = () => {
+    const url = 'https://makerxdesigns.com/pdf/makerx-sort-app-guide.pdf';
+    if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
+    else window.open(url, '_blank');
+  };
   // Fill in the "(N remembered)" reset state once we've read the saved log.
   if (typeof scResolvedCount === 'function') scRefreshResetBtn();
   _settingsKey = e => { if (e.key === 'Escape') closeSettings(); };

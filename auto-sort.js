@@ -986,7 +986,7 @@ function scSelect(i) {
   scRenderAction();
 }
 
-const SC_PREVIEWABLE = ['stl', '3mf', 'gcode', 'step', 'stp'];
+const SC_PREVIEWABLE = ['stl', '3mf', 'obj', 'ply', 'gcode', 'step', 'stp'];
 
 // A zip suggestion: peek its contents, show a clickable list over the preview,
 // and auto-load the first previewable model so the user can see what's inside.

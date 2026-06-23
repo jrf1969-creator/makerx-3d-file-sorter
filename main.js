@@ -73,7 +73,7 @@ ipcMain.handle('read-occt-wasm', async () => {
 // Returns the file list inside a ZIP — only metadata, no binary transfer
 ipcMain.handle('peek-zip', async (e, filePath) => {
   const zip        = new AdmZip(filePath);
-  const MODEL_EXTS = new Set(['stl','3mf','obj','step','stp','gcode']);
+  const MODEL_EXTS = new Set(['stl','3mf','obj','ply','step','stp','gcode']);
   const entries    = zip.getEntries().filter(en => !en.isDirectory);
   const depths     = entries
     .filter(en => MODEL_EXTS.has(en.entryName.split('.').pop().toLowerCase()))
@@ -104,7 +104,7 @@ ipcMain.handle('open-folder-dialog', async () => {
 });
 
 ipcMain.handle('scan-folder', async (e, dirPath) => {
-  const SUPPORTED = new Set(['stl', '3mf', 'zip', 'gcode', 'step', 'stp']);
+  const SUPPORTED = new Set(['stl', '3mf', 'obj', 'ply', 'zip', 'gcode', 'step', 'stp']);
   const files = [], dirs = [];
   try {
     for (const entry of await fs.readdir(dirPath, { withFileTypes: true })) {
